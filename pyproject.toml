@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sonorus"
+version = "0.1.0"
+description = "Hogwarts-themed voice cloning and text-to-speech service (web UI + CLI) built on OmniVoice."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "omnivoice>=0.2.1",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# Spell out numbers/dates before synthesis (the UI's "Normalise numbers" toggle).
+tn = ["omnivoice[tn]"]
+
+[project.scripts]
+sonorus = "hogwarts_voice.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hogwarts_voice"]

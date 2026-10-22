@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en" data-house="gryffindor">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sonorus · Chamber of Voices</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><path d='M8 56 L44 20' stroke='%23c9a227' stroke-width='6' stroke-linecap='round'/><path d='M48 6l3 8 8 3-8 3-3 8-3-8-8-3 8-3z' fill='%23f3d77a'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@700&family=Cinzel:wght@500;700&family=IM+Fell+English:ital@0;1&family=Crimson+Pro:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="sky" aria-hidden="true"></div>
+
+  <header class="top">
+    <div class="brand">
+      <svg class="crest" viewBox="0 0 64 64" aria-hidden="true">
+        <path d="M32 3 L57 12 V30 C57 46 46 56 32 61 C18 56 7 46 7 30 V12 Z" class="crest-shield"/>
+        <path d="M18 46 L42 22" class="crest-wand"/>
+        <path d="M45 13l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" class="crest-star"/>
+        <circle cx="24" cy="18" r="1.6" class="crest-star"/><circle cx="48" cy="34" r="1.2" class="crest-star"/>
+      </svg>
+      <div>
+        <h1>Sonorus</h1>
+        <p class="tagline">The Hogwarts Chamber of Voices</p>
+      </div>
+    </div>
+    <div class="top-right">
+      <div class="houses" role="radiogroup" aria-label="House theme">
+        <button class="house-btn" data-house="gryffindor" title="Gryffindor" role="radio"><span></span></button>
+        <button class="house-btn" data-house="slytherin" title="Slytherin" role="radio"><span></span></button>
+        <button class="house-btn" data-house="ravenclaw" title="Ravenclaw" role="radio"><span></span></button>
+        <button class="house-btn" data-house="hufflepuff" title="Hufflepuff" role="radio"><span></span></button>
+      </div>
+      <div id="status" class="status" data-state="idle" title="Model status">
+        <span class="flame"></span><span id="status-text">Lighting the candles…</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="col-main">
+      <!-- Voice -->
+      <article class="card">
+        <h2 class="card-title"><span class="num">I</span> Choose your magic</h2>
+        <div class="modes" role="tablist">
+          <button class="mode" role="tab" data-mode="clone">
+            <span class="mode-icon">🧪</span><b>Polyjuice Potion</b><small>Clone a voice</small>
+          </button>
+          <button class="mode" role="tab" data-mode="design">
+            <span class="mode-icon">✨</span><b>Transfiguration</b><small>Design a voice</small>
+          </button>
+          <button class="mode" role="tab" data-mode="auto">
+            <span class="mode-icon">🎩</span><b>Sorting Hat</b><small>Let it choose</small>
+          </button>
+        </div>
+
+        <!-- Clone -->
+        <div class="panel" data-panel="clone">
+          <div class="seg" role="tablist">
+            <button class="seg-btn" data-source="vault">Gringotts Vault</button>
+            <button class="seg-btn" data-source="fresh">Fresh sample</button>
+          </div>
+
+          <div data-source-panel="vault">
+            <div id="vault" class="vault"></div>
+            <p id="vault-empty" class="hint center" hidden>
+              Your vault is empty. Switch to <a href="#" data-goto="fresh">Fresh sample</a> to clone your first voice.
+            </p>
+          </div>
+
+          <div data-source-panel="fresh" hidden>
+            <div id="drop" class="drop" tabindex="0">
+              <input id="ref-file" type="file" accept="audio/*" hidden>
+              <div class="drop-empty">
+                <div class="drop-icon">🪶</div>
+                <p><b>Drop a 3–10 second clip</b> of clean speech, or</p>
+                <div class="row center">
+                  <button class="btn ghost" id="pick-file">Choose a file</button>
+                  <button class="btn ghost" id="record"><span class="rec-dot"></span><span>Record</span></button>
+                </div>
+              </div>
+              <div class="drop-full" hidden>
+                <canvas id="ref-wave" class="mini-wave"></canvas>
+                <div class="row between">
+                  <span id="ref-info" class="hint"></span>
+                  <span class="row">
+                    <button class="btn icon" id="ref-play" title="Play sample">▶</button>
+                    <button class="btn icon" id="ref-clear" title="Remove sample">✕</button>
+                  </span>
+                </div>
+              </div>
+            </div>
+            <p id="ref-warn" class="warn" hidden></p>
+            <label class="field">
+              <span>What does the clip say? <em>optional: Whisper will transcribe it if left blank</em></span>
+              <textarea id="ref-text" rows="2" placeholder="Exact words spoken in the clip, for the best clone"></textarea>
+            </label>
+            <div class="row save-row">
+              <label class="check"><input type="checkbox" id="save-voice"> Keep this voice in the vault as</label>
+              <input id="voice-name" class="input grow" placeholder="e.g. Professor Sprout" disabled>
+            </div>
+          </div>
+
+          <label class="field">
+            <span>Style hints <em>optional: attributes that match the voice can steady the clone</em></span>
+            <input id="clone-instruct" class="input" placeholder="e.g. elderly, british accent">
+          </label>
+        </div>
+
+        <!-- Design -->
+        <div class="panel" data-panel="design" hidden>
+          <div id="attrs" class="attrs"></div>
+          <label class="field">
+            <span>Spell formula <em>edit freely, comma-separated</em></span>
+            <input id="instruct" class="input mono" placeholder="Pick attributes above, or type e.g. female, young adult, whisper">
+          </label>
+          <p class="hint">Accents only apply to English text, dialects only to Chinese text. Some combinations may be partly ignored; simplify if the result surprises you.</p>
+        </div>
+
+        <!-- Auto -->
+        <div class="panel" data-panel="auto" hidden>
+          <div class="hat">
+            <div class="hat-icon">🎩</div>
+            <p>“Hmm, difficult. Very difficult…” The Sorting Hat will pick a voice for you.
+              Each spell sounds a little different. Liked one? Pin its seed in the Spellbook to hear the same voice again.</p>
+          </div>
+        </div>
+      </article>
+
+      <!-- Text -->
+      <article class="card">
+        <h2 class="card-title"><span class="num">II</span> Write the incantation</h2>
+        <div class="toolbar">
+          <span class="hint">Insert:</span>
+          <div id="tags" class="tags"></div>
+          <button class="btn link" id="sample" title="Fill in a sample line">🎲 Inspire me</button>
+        </div>
+        <textarea id="text" class="incantation" rows="6" placeholder="Type what the voice should say…  Use [laughter] or [sigh] for sounds, and [B EY1 S] (CMU phonemes) or pinyin like ZHE2 to fix pronunciation."></textarea>
+        <div class="row between text-meta">
+          <span id="text-count" class="hint">0 characters</span>
+          <span class="row lang-wrap">
+            <label for="lang" class="hint">Language</label>
+            <input id="lang" class="input" list="lang-list" placeholder="Auto-detect" autocomplete="off">
+            <datalist id="lang-list"></datalist>
+          </span>
+        </div>
+        <div class="cast-row">
+          <button id="cast" class="cast" disabled>
+            <span class="cast-label">Sonorus!</span>
+            <span class="cast-sub">Ctrl + Enter</span>
+          </button>
+        </div>
+      </article>
+
+      <!-- Result -->
+      <article id="result" class="card result" hidden>
+        <h2 class="card-title"><span class="num">III</span> The owl has returned</h2>
+        <div class="player">
+          <button id="play" class="play" aria-label="Play">▶</button>
+          <canvas id="wave" class="wave"></canvas>
+          <span id="time" class="time">0:00</span>
+        </div>
+        <audio id="audio" preload="auto"></audio>
+        <div id="result-meta" class="meta"></div>
+        <div class="row wrap">
+          <a id="download" class="btn" href="#">⬇ Download</a>
+          <button id="pin-seed" class="btn ghost">📌 Pin this seed</button>
+          <button id="copy-cli" class="btn ghost">⌘ Copy as CLI command</button>
+          <button id="save-result-voice" class="btn ghost" hidden>🏦 Save voice to vault</button>
+        </div>
+      </article>
+    </section>
+
+    <aside class="col-side">
+      <!-- Settings -->
+      <article class="card">
+        <h2 class="card-title small">📖 Spellbook</h2>
+
+        <div class="setting">
+          <div class="row between"><label for="speed">Speed</label><span class="row"><output id="speed-out">auto</output><button class="btn link tiny" id="speed-reset">reset</button></span></div>
+          <input type="range" id="speed" min="0.5" max="2" step="0.05" value="1">
+        </div>
+
+        <div class="setting">
+          <div class="row between">
+            <label class="check"><input type="checkbox" id="use-duration"> Exact length</label>
+            <span class="row"><input id="duration" class="input num-in" type="number" min="0.5" max="600" step="0.5" value="5" disabled><span class="hint">sec</span></span>
+          </div>
+          <p class="hint tight">Overrides speed. Turn off “Trim output silences” for a precise length.</p>
+        </div>
+
+        <div class="setting">
+          <div class="row between">
+            <label class="check"><input type="checkbox" id="use-seed"> Fixed seed</label>
+            <span class="row"><input id="seed" class="input num-in wide" type="number" min="0" value="42" disabled><button id="dice" class="btn icon" title="Roll a new seed">🎲</button></span>
+          </div>
+          <p class="hint tight">Same seed + same settings = the same voice and delivery.</p>
+        </div>
+
+        <div class="setting">
+          <label>Quality</label>
+          <div class="seg presets">
+            <button class="seg-btn" data-preset="16">Swift<small>16 steps</small></button>
+            <button class="seg-btn" data-preset="32">Balanced<small>32 steps</small></button>
+            <button class="seg-btn" data-preset="64">Masterwork<small>64 steps</small></button>
+          </div>
+        </div>
+
+        <div class="setting row between">
+          <label class="check" id="normalize-wrap"><input type="checkbox" id="normalize"> Spell out numbers</label>
+          <span class="row"><label for="format" class="hint">Format</label><select id="format" class="input"></select></span>
+        </div>
+
+        <details class="restricted">
+          <summary><span>🔒 Restricted Section</span><small>every OmniVoice knob</small></summary>
+          <div id="params"></div>
+          <button id="reset-params" class="btn ghost full">Reset to OmniVoice defaults</button>
+        </details>
+      </article>
+
+      <!-- History -->
+      <article class="card">
+        <div class="row between">
+          <h2 class="card-title small">🌀 Pensieve</h2>
+          <button id="clear-history" class="btn link tiny" title="Delete all generated audio">clear all</button>
+        </div>
+        <input id="history-search" class="input" placeholder="Search memories…">
+        <ul id="history" class="history"></ul>
+        <p id="history-empty" class="hint center">No memories yet. Cast your first spell.</p>
+      </article>
+    </aside>
+  </main>
+
+  <footer class="foot">
+    Powered by <a href="https://github.com/k2-fsa/OmniVoice" target="_blank" rel="noopener">OmniVoice</a> ·
+    also on the command line: <code>sonorus speak "Mischief managed." --play</code>
+  </footer>
+
+  <div id="brewing" class="brewing" hidden>
+    <div class="cauldron">
+      <div class="bubbles"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="pot"></div>
+    </div>
+    <p id="brewing-text">Brewing your voice…</p>
+    <p id="brewing-time" class="hint">0.0s</p>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <dialog id="name-dialog" class="dialog">
+    <form method="dialog">
+      <h3>Name this voice</h3>
+      <input id="dialog-name" class="input" placeholder="e.g. Mysterious Narrator" required>
+      <div class="row end">
+        <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+        <button value="ok" class="btn">Store in vault</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
