@@ -1,7 +1,8 @@
 # Copy to terraform.tfvars and edit.
 image = "docker.io/you/sonorus:0.2.0"
 
-# gpu_type_id       = "NVIDIA L40S"   # or "NVIDIA RTX A6000", "NVIDIA A40", "NVIDIA RTX 6000 Ada Generation"
+# Must be in stock in the volume's data center (see step 3 of runpod-deployment-guide.md).
+# gpu_type_id       = "NVIDIA L40S"   # or "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA H100 80GB HBM3" (H100 SXM)
 # fish_enabled      = true
 # fish_compile      = false
 # container_disk_gb = 30

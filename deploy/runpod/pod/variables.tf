@@ -10,7 +10,7 @@ variable "name" {
 }
 
 variable "gpu_type_id" {
-  description = "RunPod GPU type. Both engines on one card need about 30 GB, so use a 48 GB card: \"NVIDIA L40S\", \"NVIDIA RTX A6000\", \"NVIDIA A40\" or \"NVIDIA RTX 6000 Ada Generation\". With fish_enabled = false a 24 GB card is plenty. Changing it replaces the pod."
+  description = "RunPod GPU type, in stock in the volume's data center. Both engines on one card need about 30 GB: e.g. \"NVIDIA A40\", \"NVIDIA L40S\", \"NVIDIA RTX A6000\", \"NVIDIA RTX 6000 Ada Generation\" (48 GB), or \"NVIDIA H100 80GB HBM3\" (H100 SXM, 80 GB). With fish_enabled = false a 24 GB card is plenty. Changing it replaces the pod."
   type        = string
   default     = "NVIDIA L40S"
 }

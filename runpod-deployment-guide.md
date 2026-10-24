@@ -90,15 +90,36 @@ Use a new tag for every build (`0.2.0`, `0.2.1`, …) rather than reusing one. T
 
 ## 3. Pick a data center
 
-A network volume lives in one data center, and the pod must run in the same one. Pick a data center that has
-48 GB GPUs available in Secure Cloud:
+A network volume lives in one data center, and the pod must run in the same one. So the data center needs both:
 
-- in the RunPod console, start creating a network volume and look at which data centers list L40S, A6000 or A40
-  availability, or
-- open Console → Pods → Deploy, filter to Secure Cloud and 48 GB cards, and note the region of what's available.
+1. **Network volumes.** Not every data center offers them (`EU-SE-1` didn't when this was written).
+2. **Stock of the GPU you want, in Secure Cloud.** Stock changes by the minute, and a data center can have none of a
+   given card at all.
 
-Note the data center id (for example `EU-RO-1` or `US-KS-2`). If that data center later runs out of these GPUs,
-the pod creation fails; see Troubleshooting.
+Pick the GPU first. Both engines together need about 30 GB of GPU memory; OmniVoice alone fits in 16–24 GB.
+
+| `gpu_type_id` | Card | Memory |
+|---|---|---|
+| `NVIDIA A40` | A40 (cheapest 48 GB option, slower) | 48 GB |
+| `NVIDIA RTX A6000` | RTX A6000 | 48 GB |
+| `NVIDIA L40S` | L40S (the default) | 48 GB |
+| `NVIDIA RTX 6000 Ada Generation` | RTX 6000 Ada | 48 GB |
+| `NVIDIA A100 80GB PCIe` / `NVIDIA A100-SXM4-80GB` | A100 | 80 GB |
+| `NVIDIA H100 PCIe` / `NVIDIA H100 80GB HBM3` | H100 PCIe / H100 SXM | 80 GB |
+
+Then find where it's in stock. In the console: Pods → Deploy, filter to Secure Cloud and that card, and check the
+regions offered; Storage → New Network Volume shows which data centers take volumes. Or ask the API (read-only):
+
+```bash
+GPU="NVIDIA H100 80GB HBM3"
+curl -s https://api.runpod.io/graphql -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $RUNPOD_API_KEY" \
+  -d '{"query":"query { dataCenters { id gpuAvailability { gpuTypeId stockStatus } } }"}' \
+  | GPU="$GPU" python3 -c 'import json,os,sys; [print(dc["id"], g["stockStatus"]) for dc in json.load(sys.stdin)["data"]["dataCenters"] for g in dc["gpuAvailability"] if g["gpuTypeId"] == os.environ["GPU"] and g["stockStatus"]]'
+```
+
+Prefer `High` or `Medium` stock; with `Low` you may have to retry the pod a few times. Note the data center id (for
+example `CA-MTL-1`) for the volume, and the `gpu_type_id` for the pod.
 
 ## 4. Create the network volume (once)
 
@@ -125,7 +146,9 @@ terraform apply
 terraform output
 ```
 
-The pod stack reads the volume id and data center from the volume stack's state, so you don't copy them across.
+The pod stack reads the volume id and data center from the volume stack's **state**, not from its `terraform.tfvars`,
+so you don't copy them across. It also means a changed `data_center_id` only reaches the pod after you apply the
+volume stack. Always apply the volume stack first.
 It also asks for a host whose driver supports CUDA 12.6 or newer (`min_cuda_version`), because both engines use
 CUDA 12.6 builds of PyTorch.
 The outputs give you:
@@ -141,7 +164,7 @@ Variables you can set in `deploy/runpod/pod/terraform.tfvars`:
 |---|---|---|
 | `image` | (required) | The image you pushed in step 2 |
 | `name` | `sonorus` | Pod name in the RunPod console |
-| `gpu_type_id` | `NVIDIA L40S` | RunPod GPU type. Other 48 GB options: `NVIDIA RTX A6000`, `NVIDIA A40`, `NVIDIA RTX 6000 Ada Generation`. Changing it replaces the pod |
+| `gpu_type_id` | `NVIDIA L40S` | RunPod GPU type; see the table in step 3 (e.g. `NVIDIA A40`, `NVIDIA H100 80GB HBM3` for H100 SXM). It must be in stock in the volume's data center. Changing it replaces the pod |
 | `container_disk_gb` | `30` | Scratch disk inside the container (models live on the volume, not here) |
 | `fish_enabled` | `true` | `false` runs OmniVoice only, so a 16–24 GB GPU is enough |
 | `fish_compile` | `false` | `true` runs fish-speech with `torch.compile`: much faster speech, slow first start |
@@ -229,7 +252,7 @@ The fish-speech server listens only on `127.0.0.1` inside the pod and isn't expo
 
 | Symptom | What to do |
 |---|---|
-| `terraform apply` on the pod fails with no GPU / capacity available | The data center has no free card of that type with CUDA 12.6+ right now. Try another 48 GB `gpu_type_id`, retry later, or move: destroy the volume, recreate it in another data center (you lose its contents), then apply the pod |
+| Pod creation fails with "There are no longer any instances available with the requested specifications" | No free card of that `gpu_type_id` (Secure Cloud, CUDA 12.6+) in the volume's data center right now. First check the pod plan's `data_center_ids`: if it shows the old data center, you changed the volume's `tfvars` without applying the volume stack. Otherwise retry in a few minutes, pick another `gpu_type_id`, or move: set a new `data_center_id` (step 3), apply the volume stack (this replaces the volume and its contents), then apply the pod |
 | Pod keeps restarting, logs show an image pull error | The image is private and the registry credentials are missing or wrong, or the tag doesn't exist. Check `image`, `registry_username`, `registry_password` |
 | Logs show a CUDA or driver error | Shouldn't happen with `min_cuda_version = "12.6"`, but if it does, recreate the pod (`terraform apply -replace=runpod_pod.sonorus`) to land on another host |
 | Fish Speech stays on "waiting…" | Check the logs. `start.sh` retries a failed S2-Pro download every 30 s (a full volume is a common cause: grow `size_gb` and apply the volume stack) and restarts fish-speech 10 s after it exits. The CLI gives up waiting after 20 minutes (`SONORUS_WAIT` in seconds changes that) |

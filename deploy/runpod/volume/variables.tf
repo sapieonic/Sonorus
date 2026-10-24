@@ -1,5 +1,5 @@
 variable "data_center_id" {
-  description = "Data center for the volume, e.g. \"EU-RO-1\". The pod has to run there too, so pick one with 48 GB GPUs in Secure Cloud. Changing it replaces the volume and its contents."
+  description = "Data center for the volume, e.g. \"CA-MTL-1\". It must offer network volumes, and the pod runs there too, so it needs Secure Cloud stock of your gpu_type_id. Changing it replaces the volume and its contents; apply this stack before the pod stack."
   type        = string
 }
 
