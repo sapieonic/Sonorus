@@ -17,13 +17,22 @@ RUN apt-get update \
 WORKDIR /opt/sonorus
 ENV UV_LINK_MODE=copy
 
+# uv gives up on PyPI after 30 s and 3 retries by default, which a slow link (or amd64 emulation on Apple Silicon)
+# easily hits. Build args, so they stay out of the final image; override with --build-arg if needed.
+ARG UV_HTTP_TIMEOUT=300
+ARG UV_HTTP_RETRIES=10
+ARG UV_CONCURRENT_DOWNLOADS=4
+
 # Dependencies first so code changes don't reinstall torch. cu126 like fish-speech's own torch in the base image,
-# so the pod only needs a host driver for CUDA 12.6+. The model stack is pinned to the versions Sonorus was tested with.
+# so the pod only needs a host driver for CUDA 12.6+. torch gets its own layer: it's the big download.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv venv .venv --python /usr/bin/python3 \
+    && uv pip install --python .venv/bin/python --index-url https://download.pytorch.org/whl/cu126 torch==2.11.0 torchaudio==2.11.0
+
+# The rest of the model stack, pinned to the versions Sonorus was tested with.
 COPY pyproject.toml README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     printf 'torch==2.11.0\ntorchaudio==2.11.0\nomnivoice==0.2.1\ntransformers==5.20.2\n' > constraints.txt \
-    && uv venv .venv --python /usr/bin/python3 \
-    && uv pip install --python .venv/bin/python --index-url https://download.pytorch.org/whl/cu126 torch==2.11.0 torchaudio==2.11.0 \
     && uv pip install --python .venv/bin/python -c constraints.txt -r pyproject.toml
 
 COPY hogwarts_voice ./hogwarts_voice

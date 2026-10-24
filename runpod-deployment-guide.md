@@ -74,6 +74,13 @@ The script builds for `linux/amd64`, the architecture of RunPod's GPU machines. 
 cross-build under emulation, so the first build is slow. Later builds reuse the cached layers, and changing only
 Sonorus code rebuilds just the last few layers.
 
+If the build stops with `Failed to fetch: https://pypi.org/...` and `operation timed out`, the connection to PyPI was
+too slow, not the Dockerfile. Run the script again: downloaded packages are cached, so it picks up where it stopped.
+The Dockerfile already allows 300 s per request and 10 retries; on a very slow link raise them, e.g. add
+`--build-arg UV_HTTP_TIMEOUT=600 --build-arg UV_CONCURRENT_DOWNLOADS=2` to the `docker buildx build` command in
+`deploy/build-push.sh`. If it never gets through, check whether a VPN or proxy is blocking `pypi.org` and
+`files.pythonhosted.org`.
+
 **Make the image pullable by RunPod.** The simplest way is to make the repository public; the image holds no secrets,
 only code and libraries. If you keep it private, set `registry_username` and `registry_password` in the pod stack
 (step 5). For Docker Hub use an access token as the password; for GHCR use a token with `read:packages`.
