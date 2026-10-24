@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .fish import FISH_PARAM_DEFAULTS, FishError, FishSpeech
+from .fish import FISH_PARAM_DEFAULTS, FishError, FishSpeech, check_params
 
 log = logging.getLogger("sonorus")
 
@@ -611,7 +611,10 @@ class Engine:
         unknown = set(req.params) - set(FISH_PARAM_DEFAULTS)
         if unknown:
             raise SonorusError(f"Unknown Fish Speech option(s): {', '.join(sorted(unknown))}")
-        params = {**FISH_PARAM_DEFAULTS, **req.params}
+        try:
+            params = check_params(req.params)
+        except ValueError as exc:
+            raise SonorusError(str(exc)) from exc
 
         references, ref_text = [], None
         if voice_meta:

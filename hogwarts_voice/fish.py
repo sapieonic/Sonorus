@@ -22,6 +22,22 @@ FISH_PARAMS: list[dict[str, Any]] = [
 ]
 FISH_PARAM_DEFAULTS = {p["key"]: p["default"] for p in FISH_PARAMS}
 
+
+def check_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Fill in defaults and reject values outside FISH_PARAMS' ranges (they arrive from the public API)."""
+    out = dict(FISH_PARAM_DEFAULTS)
+    for p in FISH_PARAMS:
+        if p["key"] not in params:
+            continue
+        value = params[p["key"]]
+        cast = int if p["type"] == "int" else float
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or cast(value) != value:
+            raise ValueError(f"{p['label']} must be {'a whole number' if cast is int else 'a number'}.")
+        if not p["min"] <= value <= p["max"]:
+            raise ValueError(f"{p['label']} must be between {p['min']} and {p['max']}.")
+        out[p["key"]] = cast(value)
+    return out
+
 # Fish takes free-form inline instructions; these are the ones its docs use.
 FISH_TAGS = [
     ("[pause]", "Pause"), ("[laughing]", "Laugh"), ("[whisper]", "Whisper"), ("[excited]", "Excited"),
@@ -43,6 +59,7 @@ def split_text(text: str, limit: int) -> list[str]:
     fish-speech only splits text at <|speaker:N|> tags, and a single pass stops at max_new_tokens
     (about 47 s by default), so long plain text has to be cut up here.
     """
+    limit = max(int(limit), 1)
     parts: list[str] = []
     for sentence in _SENTENCE_END.split(text.strip()):
         sentence = sentence.strip()
