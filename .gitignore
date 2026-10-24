@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated audio from CLI runs
+*.wav
+*.flac
+*.ogg
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Terraform (keep .terraform.lock.hcl; tfvars may hold registry credentials, state holds them too)
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+crash.log
