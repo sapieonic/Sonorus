@@ -1,0 +1,5 @@
+# Copy to terraform.tfvars and edit.
+# Needs network volumes and stock of your GPU; see step 3 of runpod-deployment-guide.md.
+# After changing it, apply this stack before the pod stack.
+data_center_id = "CA-MTL-1"
+# size_gb      = 50

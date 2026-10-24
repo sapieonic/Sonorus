@@ -1,0 +1,9 @@
+.git
+.venv
+**/__pycache__
+**/*.pyc
+deploy/runpod
+*.wav
+*.flac
+*.ogg
+.DS_Store

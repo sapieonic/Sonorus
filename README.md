@@ -1,12 +1,13 @@
 # Sonorus 🪄
 
 A Hogwarts-themed voice cloning and text-to-speech service built on
-[OmniVoice](https://github.com/k2-fsa/OmniVoice) (600+ languages, zero-shot cloning, voice design).
-You get a web UI with every OmniVoice option, plus a `sonorus` CLI for scripting.
+[OmniVoice](https://github.com/k2-fsa/OmniVoice) (600+ languages, zero-shot cloning, voice design) and,
+optionally, [Fish Speech](https://github.com/fishaudio/fish-speech) (expressive speech steered by inline tags).
+You get a web UI with every option of both engines, plus a `sonorus` CLI for scripting.
 
 | Spell | What it does |
 |---|---|
-| 🧪 **Polyjuice Potion** | Clone a voice from a 3–10 s clip (upload, drag-drop or record in the browser) |
+| 🧪 **Polyjuice Potion** | Clone a voice from a short clip (upload, drag-drop or record in the browser) |
 | ✨ **Transfiguration** | Design a voice from attributes: gender, age, pitch, whisper, English accent, Chinese dialect |
 | 🎩 **Sorting Hat** | Let the model pick a voice |
 | 🏦 **Gringotts Vault** | Saved voices, reusable from the UI and CLI |
@@ -26,6 +27,22 @@ source .venv/bin/activate
 ```
 
 The model (~3.3 GB) downloads from Hugging Face on first run into `~/.cache/huggingface`.
+
+## Two engines
+
+| | OmniVoice | Fish Speech (S2-Pro) |
+|---|---|---|
+| Runs | in-process, on CUDA / Apple MPS / CPU | as a separate fish-speech API server; needs an NVIDIA GPU with 24 GB+ |
+| Cloning | 3–10 s clip | 10–30 s clip works best |
+| Voice design (gender, age, accent…) | yes | no |
+| Speed / exact length / language / spell out numbers | yes | no (it detects the language and reads numbers itself) |
+| Long text | split by OmniVoice | split by Sonorus at sentence ends ("Piece length"), then joined |
+| Expressive control | sound tags like `[laughter]`, `[sigh]` | free-form tags like `[whisper]`, `[excited]`, `[pause]` |
+
+OmniVoice is always on. To add Fish Speech, start a fish-speech API server and point Sonorus at it with
+`SONORUS_FISH_URL` (the RunPod image does this for you; see [runpod-deployment-guide.md](runpod-deployment-guide.md)).
+The switch in the top-right of the UI then picks the engine, and the CLI takes `--engine fish`.
+Saved voices work with both: OmniVoice prepares them (and transcribes the clip), Fish Speech reuses the stored clip and transcript.
 
 ## Web UI
 
@@ -48,6 +65,7 @@ sonorus speak "Hello there." -r clip.wav -t "What the clip says."   # one-off cl
 
 sonorus clone minerva clip.wav -t "What the clip says."             # save to the vault
 sonorus speak "Five points from Gryffindor." -v minerva --seed 7 --steps 16
+sonorus speak "[whisper] Five points from Gryffindor." -v minerva -e fish --temperature 0.6   # Fish Speech
 cat chapter1.txt | sonorus speak -v minerva -o chapter1.flac        # long text is chunked automatically
 
 sonorus voices                # list the vault
@@ -78,11 +96,16 @@ the UI's Pensieve). Otherwise the CLI loads the model itself. Use `--local` or `
 | `SONORUS_HOST` / `SONORUS_PORT` | `127.0.0.1` / `7860` | Server bind address |
 | `SONORUS_URL` | derived | Where the CLI looks for a running server |
 | `SONORUS_HISTORY_LIMIT` | `200` | Oldest memories are dropped past this |
+| `SONORUS_FISH_URL` | unset | fish-speech API server, e.g. `http://127.0.0.1:8080`; enables the Fish Speech engine |
+| `SONORUS_FISH_API_KEY` | unset | Bearer token, if that server runs with `--api-key` |
+| `SONORUS_FISH_MODEL` | `S2-Pro` | Name shown in the UI for the fish checkpoint |
+| `SONORUS_ENGINE` | `omnivoice` | Default engine for `sonorus speak` |
 
 ## API
 
-`GET /api/status` · `GET /api/options` · `POST /api/speak` (multipart: `text`, `voice`, `ref_audio`,
-`ref_text`, `instruct`, `language`, `speed`, `duration`, `seed`, `normalize_text`, `format`, `params` as JSON) ·
+`GET /api/status` (per-engine state under `engines`) · `GET /api/options` · `POST /api/speak` (multipart: `text`, `engine` (`omnivoice`/`fish`), `voice`, `ref_audio`,
+`ref_text`, `instruct`, `language`, `speed`, `duration`, `seed`, `normalize_text`, `format`, `params` as JSON;
+add `?wait=false` to get a job id back at once, then poll `GET /api/jobs/{id}`) ·
 `GET|POST /api/voices` · `DELETE /api/voices/{id}` · `GET /api/history` · `GET /api/history/{id}/audio` ·
 `DELETE /api/history/{id}`. Interactive docs at `/docs`.
 
@@ -93,7 +116,8 @@ the UI's Pensieve). Otherwise the CLI loads the model itself. Use `--local` or `
   On small GPUs the audio codec and Whisper run on the CPU automatically to avoid out-of-memory errors.
 - Swift (16 steps) is ~2× faster than Balanced (32) but slightly less clear; use Balanced or Masterwork for final takes.
 
-- Reference clips: 3–10 s of clean speech in the same language as the target text gives the best clone.
+- Reference clips: clean speech in the same language as the target text gives the best clone; 3–10 s for OmniVoice,
+  10–30 s for Fish Speech.
 - Voice design is trained on English and Chinese; other languages may be unstable.
 - The CLI reads WAV/FLAC/OGG reference clips directly; MP3/M4A need ffmpeg on the system.
   The browser UI converts any format it can play to WAV before uploading, so no ffmpeg needed there.
