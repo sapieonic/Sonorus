@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and edit.
+image = "docker.io/you/sonorus:0.2.0"
+
+# gpu_type_id       = "NVIDIA L40S"   # or "NVIDIA RTX A6000", "NVIDIA A40", "NVIDIA RTX 6000 Ada Generation"
+# fish_enabled      = true
+# fish_compile      = false
+# container_disk_gb = 30
+
+# Only for a private image (Docker Hub access token, or a GHCR token with read:packages):
+# registry_username = "you"
+# registry_password = "..."

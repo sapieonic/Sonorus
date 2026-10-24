@@ -33,6 +33,13 @@ PARAM_FLAGS = {
     "preprocess_prompt": (bool, ["--preprocess"], "Clean the reference clip and transcript (default on)."),
     "postprocess_output": (bool, ["--postprocess"], "Trim long silences from the output (default on)."),
 }
+# Kept in sync with fish.FISH_PARAMS.
+FISH_FLAGS = {
+    "temperature": (float, ["--temperature"], "Sampling temperature, 0.1-1.0 (default 0.7)."),
+    "top_p": (float, ["--top-p"], "Nucleus sampling cut-off, 0.1-1.0 (default 0.7)."),
+    "chunk_length": (int, ["--chunk-length"], "Characters per long-form chunk, 100-1000 (default 200)."),
+    "max_new_tokens": (int, ["--max-tokens"], "Max frames per chunk, 0 = model cap (default 1024)."),
+}
 
 GOLD, GREEN, RED, DIM, BOLD, RESET = "\033[33m", "\033[32m", "\033[31m", "\033[2m", "\033[1m", "\033[0m"
 if not sys.stderr.isatty() or os.environ.get("NO_COLOR"):
@@ -78,15 +85,16 @@ class RemoteBackend:
             fail(str(detail))
         return resp
 
-    def wait_ready(self):
+    def wait_ready(self, engine: str = "omnivoice"):
         import time
 
         shown = False
         while True:
             st = self.http.get("/api/status").json()
+            st = st.get("engines", {}).get(engine, st)
             if st["state"] == "ready":
                 return
-            if st["state"] == "error":
+            if st["state"] in ("error", "disabled"):
                 fail(st["message"])
             if st["state"] == "idle":
                 self.http.post("/api/load")
@@ -96,7 +104,7 @@ class RemoteBackend:
             time.sleep(1.5)
 
     def speak(self, req: dict, output: Path | None) -> tuple[dict, Path]:
-        self.wait_ready()
+        self.wait_ready(req["engine"])
         data = {k: v for k, v in req.items() if k not in ("ref_audio", "params") and v is not None}
         data["params"] = json.dumps(req.get("params") or {})
         if req.get("ref_audio"):
@@ -216,15 +224,20 @@ def cmd_speak(args):
         fmt = ext if ext in ("wav", "flac", "ogg") else None
     if args.ref_audio and not Path(args.ref_audio).exists():
         fail(f"Reference audio not found: {args.ref_audio}")
-    params = {k: getattr(args, k) for k in PARAM_FLAGS if getattr(args, k) is not None}
+    flags, other = (FISH_FLAGS, PARAM_FLAGS) if args.engine == "fish" else (PARAM_FLAGS, FISH_FLAGS)
+    stray = [flag[1][0] for k, flag in other.items() if getattr(args, k) is not None]
+    if stray:
+        fail(f"{', '.join(stray)} not available with --engine {args.engine}.")
+    params = {k: getattr(args, k) for k in flags if getattr(args, k) is not None}
     req = {
         "text": text, "voice": args.voice, "ref_audio": args.ref_audio, "ref_text": args.ref_text,
         "instruct": args.design, "language": args.lang, "speed": args.speed, "duration": args.duration,
         "seed": args.seed, "normalize_text": args.normalize, "format": fmt or "wav", "params": params,
+        "engine": args.engine,
     }
     mode = "clone" if (args.voice or args.ref_audio) else "design" if args.design else "auto"
     who = args.voice or (Path(args.ref_audio).name if args.ref_audio else args.design or "a voice of the model's choosing")
-    say(f"{GOLD}🪄 Sonorus!{RESET} {DIM}({mode}: {who}){RESET}")
+    say(f"{GOLD}🪄 Sonorus!{RESET} {DIM}({args.engine}, {mode}: {who}){RESET}")
     item, out = backend(args).speak(req, Path(args.output) if args.output else None)
     say(f"{GREEN}✓{RESET} {BOLD}{out}{RESET}  {item['seconds']:.1f}s of speech in {item['elapsed']:.1f}s"
         f" {DIM}(seed {item['seed']}, {item.get('device') or 'server'}){RESET}")
@@ -316,13 +329,14 @@ def cmd_status(args):
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="sonorus",
-        description="Hogwarts-themed voice cloning and text-to-speech, powered by OmniVoice.",
+        description="Hogwarts-themed voice cloning and text-to-speech, powered by OmniVoice and Fish Speech.",
         epilog='Examples:\n'
                '  sonorus serve                                   # open the web UI\n'
                '  sonorus speak "Mischief managed." -o out.wav    # auto voice\n'
                '  sonorus speak "Hello" -d "female, british accent, low pitch"\n'
                '  sonorus clone minerva clip.wav --text "What the clip says."\n'
                '  sonorus speak "Five points from Gryffindor." -v minerva --play\n'
+               '  sonorus speak "[whisper] Mischief managed." -e fish -v minerva\n'
                '  cat story.txt | sonorus speak -v minerva -o story.flac',
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -337,6 +351,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("text", nargs="?", help="Text to speak. Use '-' (or pipe) to read stdin.")
     s.add_argument("-f", "--file", help="Read the text from a file.")
     s.add_argument("-o", "--output", help="Output file (.wav/.flac/.ogg). Default: ./sonorus-<id>.wav")
+    s.add_argument("-e", "--engine", choices=["omnivoice", "fish"], default=os.environ.get("SONORUS_ENGINE", "omnivoice"),
+                   help="Speech engine. fish needs a server started with SONORUS_FISH_URL.")
     g = s.add_argument_group("voice (pick one; none = the model chooses)")
     g.add_argument("-v", "--voice", help="Saved voice from the vault (id or name).")
     g.add_argument("-r", "--ref-audio", help="Clone a one-off voice from this 3-10 s clip.")
@@ -358,6 +374,9 @@ def build_parser() -> argparse.ArgumentParser:
             adv.add_argument(*flags, dest=key, action=argparse.BooleanOptionalAction, default=None, help=help_)
         else:
             adv.add_argument(*flags, dest=key, type=typ, default=None, help=help_)
+    fo = s.add_argument_group("Fish Speech options (with --engine fish; voice design, language and speed don't apply)")
+    for key, (typ, flags, help_) in FISH_FLAGS.items():
+        fo.add_argument(*flags, dest=key, type=typ, default=None, help=help_)
     conn(s)
     s.set_defaults(func=cmd_speak)
 

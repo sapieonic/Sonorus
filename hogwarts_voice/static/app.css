@@ -104,6 +104,16 @@ h1 {
 .house-btn:hover { transform: scale(1.1); }
 .house-btn[aria-checked="true"] { border-color: var(--gold-bright); }
 
+/* Engine switch: which wand core casts the spell */
+.engines { display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); }
+.engine-btn {
+  border: 0; border-radius: 999px; padding: 5px 13px; cursor: pointer; background: none;
+  font: 600 13.5px var(--font-head); color: #d9c79d; transition: background .2s, color .2s;
+}
+.engine-btn:hover:not(:disabled) { color: var(--gold-bright); }
+.engine-btn[aria-checked="true"] { background: var(--house); color: var(--house-ink); box-shadow: inset 0 0 0 1px var(--house-metal); }
+.engine-btn:disabled { opacity: .4; cursor: not-allowed; }
+
 .status {
   display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 999px;
   background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); font-size: 15px; max-width: 420px;
@@ -196,7 +206,7 @@ textarea { width: 100%; resize: vertical; }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ---------- Modes ---------- */
-.modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.modes { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 10px; }
 .mode {
   display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 14px 8px; cursor: pointer;
   border-radius: 12px; border: 1.5px solid var(--parchment-edge); background: rgba(255,250,235,.45); color: var(--ink);
@@ -351,6 +361,7 @@ input[type="range"] { width: 100%; accent-color: var(--house); margin: 6px 0 0; 
 .memory .mactions { display: flex; gap: 0; }
 .memory .mactions button, .memory .mactions a { width: 26px; height: 26px; display: grid; place-items: center; border: 0; background: none; cursor: pointer; border-radius: 6px; color: var(--ink-soft); text-decoration: none; font-size: 13px; }
 .memory .mactions button:hover, .memory .mactions a:hover { background: rgba(0,0,0,.08); color: var(--ink); }
+.badge.alt { background: var(--ink-soft); color: var(--parchment); }
 .badge { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; font-family: var(--font-head); letter-spacing: .04em; background: var(--house); color: var(--house-ink); margin-right: 4px; vertical-align: 1px; }
 #history-search { width: 100%; }
 

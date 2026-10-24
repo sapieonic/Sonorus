@@ -1,0 +1,3 @@
+# Copy to terraform.tfvars and edit.
+data_center_id = "EU-RO-1"
+# size_gb      = 50

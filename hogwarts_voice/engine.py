@@ -1,4 +1,4 @@
-"""OmniVoice wrapper: lazy model loading, generation, the voice vault and the Pensieve (history)."""
+"""Speech engines (OmniVoice in-process, Fish Speech over HTTP), the voice vault and the Pensieve (history)."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+from .fish import FISH_PARAM_DEFAULTS, FishError, FishSpeech
 
 log = logging.getLogger("sonorus")
 
@@ -25,9 +26,13 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 # Keep CLI output clean: no "Fetching files" / "Loading weights" progress bars.
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 SMALL_GPU_BYTES = 8 * 1024**3
+# The model loads on a background thread while web requests (e.g. /api/options) also import omnivoice;
+# two threads importing the package for the first time at once can hit Python's _DeadlockError.
+_OMNIVOICE_IMPORT_LOCK = threading.Lock()
 
 SAMPLE_RATE = 24000
 AUDIO_FORMATS = ("wav", "flac", "ogg")
+ENGINES = ("omnivoice", "fish")
 
 # Every OmniVoiceGenerationConfig knob, with UI metadata. Defaults mirror OmniVoice's.
 GENERATION_PARAMS: list[dict[str, Any]] = [
@@ -93,7 +98,14 @@ def _slug(name: str) -> str:
     return slug or "voice"
 
 
+def _import_omnivoice() -> None:
+    """Finish the first import of omnivoice on one thread before any other thread touches it."""
+    with _OMNIVOICE_IMPORT_LOCK:
+        import omnivoice  # noqa: F401
+
+
 def list_languages() -> list[dict[str, str]]:
+    _import_omnivoice()
     from omnivoice.utils.lang_map import LANG_NAME_TO_ID
 
     langs = [{"id": code, "name": name.title()} for name, code in LANG_NAME_TO_ID.items()]
@@ -127,6 +139,7 @@ class SpeakRequest:
     normalize_text: bool = False
     format: str = "wav"
     params: dict[str, Any] = field(default_factory=dict)
+    engine: str = "omnivoice"
 
     @property
     def mode(self) -> str:
@@ -256,6 +269,8 @@ class Engine:
         self.busy = False
         self._load_lock = threading.Lock()
         self._gen_lock = threading.Lock()
+        s = self.settings
+        self.fish = FishSpeech(s.fish_url, s.fish_api_key, s.fish_model) if s.fish_url else None
 
     # -- loading ------------------------------------------------------------
 
@@ -268,6 +283,11 @@ class Engine:
             "model": self.settings.model,
             "busy": self.busy,
             "sample_rate": SAMPLE_RATE,
+            "engines": {
+                "omnivoice": {"state": self.state, "message": self.message, "model": self.settings.model},
+                "fish": self.fish.status() if self.fish else {
+                    "state": "disabled", "message": "Fish Speech is not set up (set SONORUS_FISH_URL)."},
+            },
         }
 
     def _pick_device_dtype(self):
@@ -316,6 +336,7 @@ class Engine:
             try:
                 import torch
                 import transformers
+                _import_omnivoice()
                 from omnivoice import OmniVoice
 
                 transformers.utils.logging.disable_progress_bar()
@@ -323,6 +344,9 @@ class Engine:
                 transformers.utils.logging.set_verbosity_error()
                 device, dtype, dtype_name, asr_device, codec_device = self._pick_device_dtype()
                 self.device, self.dtype = device, dtype_name
+                if device == "mps":
+                    # transformers copies weights to the device from worker threads; on MPS that hangs forever.
+                    os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
                 log.info("Loading %s on %s (%s), codec on %s, ASR on %s",
                          self.settings.model, device, dtype_name, codec_device, asr_device)
                 started = time.time()
@@ -429,6 +453,7 @@ class Engine:
         """Keep a 24 kHz mono WAV of the reference so the UI can play it back."""
         try:
             import soundfile as sf
+            _import_omnivoice()
             from omnivoice.utils.audio import load_audio
 
             sf.write(str(dst), load_audio(src, SAMPLE_RATE)[0], SAMPLE_RATE)
@@ -437,6 +462,21 @@ class Engine:
 
     # -- generation ---------------------------------------------------------
 
+    def _transcribe(self, ref_audio: str) -> str:
+        """Transcribe a reference clip with OmniVoice's Whisper (Fish Speech needs a transcript to clone)."""
+        _import_omnivoice()
+        from omnivoice.utils.audio import load_audio
+
+        model = self._require_model()
+        with self._gen_lock:
+            self.busy = True
+            try:
+                if model._asr_pipe is None:
+                    model.load_asr_model()
+                return model.transcribe((load_audio(ref_audio, SAMPLE_RATE), SAMPLE_RATE))
+            finally:
+                self.busy = False
+
     def speak(self, req: SpeakRequest) -> dict:
         text = req.text.strip()
         if not text:
@@ -444,19 +484,54 @@ class Engine:
         fmt = req.format.lower()
         if fmt not in AUDIO_FORMATS:
             raise SonorusError(f"Unsupported format '{req.format}'. Choose one of: {', '.join(AUDIO_FORMATS)}")
+        if req.engine not in ENGINES:
+            raise SonorusError(f"Unknown engine '{req.engine}'. Choose one of: {', '.join(ENGINES)}")
+        if req.ref_audio and not Path(req.ref_audio).exists():
+            raise SonorusError(f"Reference audio not found: {req.ref_audio}")
+        voice_meta = self.vault.get(req.voice) if req.voice else None
+        seed = req.seed if req.seed is not None else random.randint(0, 2**31 - 1)
+
+        generate = self._generate_fish if req.engine == "fish" else self._generate_omnivoice
+        audio, sr, elapsed, details = generate(req, text, voice_meta, seed)
+
+        import soundfile as sf
+
+        item_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        filename = f"{item_id}.{fmt}"
+        sf.write(str(self.pensieve.root / filename), audio, sr)
+        seconds = len(audio) / sr
+        item = {
+            "id": item_id,
+            "file": filename,
+            "created": _now(),
+            "text": text,
+            "engine": req.engine,
+            "mode": req.mode,
+            "voice": voice_meta["id"] if voice_meta else None,
+            "voice_name": voice_meta["name"] if voice_meta else None,
+            **details,
+            "seed": seed,
+            "format": fmt,
+            "seconds": round(seconds, 2),
+            "elapsed": round(elapsed, 2),
+            "rtf": round(elapsed / seconds, 3) if seconds else None,
+        }
+        self.pensieve.add(item)
+        return item
+
+    def _generate_omnivoice(self, req: SpeakRequest, text: str, voice_meta: dict | None, seed: int):
         unknown = set(req.params) - set(PARAM_DEFAULTS)
         if unknown:
-            raise SonorusError(f"Unknown generation option(s): {', '.join(sorted(unknown))}")
+            raise SonorusError(f"Unknown OmniVoice option(s): {', '.join(sorted(unknown))}")
         if req.normalize_text and not normalization_available():
             raise SonorusError("Number normalisation needs the extra package: pip install 'omnivoice[tn]'")
 
-        import soundfile as sf
+        _import_omnivoice()
         from omnivoice import OmniVoiceGenerationConfig, VoiceClonePrompt
         from omnivoice.utils.common import fix_random_seed
 
         model = self._require_model()
         params = {**PARAM_DEFAULTS, **req.params}
-        seed = req.seed if req.seed is not None else random.randint(0, 2**31 - 1)
 
         kwargs: dict[str, Any] = {
             "text": text,
@@ -467,13 +542,9 @@ class Engine:
             "normalize_text": req.normalize_text,
             "generation_config": OmniVoiceGenerationConfig.from_dict(params),
         }
-        voice_meta = None
-        if req.voice:
-            voice_meta = self.vault.get(req.voice)
+        if voice_meta:
             kwargs["voice_clone_prompt"] = VoiceClonePrompt.load(str(self.vault.prompt_path(voice_meta["id"])))
         elif req.ref_audio:
-            if not Path(req.ref_audio).exists():
-                raise SonorusError(f"Reference audio not found: {req.ref_audio}")
             kwargs["ref_audio"] = req.ref_audio
             kwargs["ref_text"] = (req.ref_text or "").strip() or None
 
@@ -494,35 +565,64 @@ class Engine:
                 self.busy = False
                 self._free_gpu()
 
-        sr = model.sampling_rate or SAMPLE_RATE
-        item_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
-        filename = f"{item_id}.{fmt}"
-        sf.write(str(self.pensieve.root / filename), audio, sr)
-        seconds = len(audio) / sr
-        item = {
-            "id": item_id,
-            "file": filename,
-            "created": _now(),
-            "text": text,
-            "mode": req.mode,
-            "voice": voice_meta["id"] if voice_meta else None,
-            "voice_name": voice_meta["name"] if voice_meta else None,
+        details = {
             "ref_text": kwargs.get("ref_text"),
             "instruct": kwargs["instruct"],
             "language": req.language,
             "speed": req.speed,
             "duration_target": req.duration,
             "normalize_text": req.normalize_text,
-            "seed": seed,
-            "format": fmt,
             "params": {k: v for k, v in params.items() if v != PARAM_DEFAULTS[k]},
-            "seconds": round(seconds, 2),
-            "elapsed": round(elapsed, 2),
-            "rtf": round(elapsed / seconds, 3) if seconds else None,
             "device": self.device,
         }
-        self.pensieve.add(item)
-        return item
+        return audio, model.sampling_rate or SAMPLE_RATE, elapsed, details
+
+    def _generate_fish(self, req: SpeakRequest, text: str, voice_meta: dict | None, seed: int):
+        if not self.fish:
+            raise SonorusError("Fish Speech is not set up on this server (set SONORUS_FISH_URL).")
+        unsupported = [name for name, value in (
+            ("voice design / style hints", (req.instruct or "").strip()), ("language", req.language),
+            ("speed", req.speed), ("exact duration", req.duration)) if value]
+        if unsupported:
+            raise SonorusError(f"Fish Speech doesn't support {', '.join(unsupported)}. "
+                               "Steer it with inline tags like [whisper] in the text, or switch to OmniVoice.")
+        unknown = set(req.params) - set(FISH_PARAM_DEFAULTS)
+        if unknown:
+            raise SonorusError(f"Unknown Fish Speech option(s): {', '.join(sorted(unknown))}")
+        params = {**FISH_PARAM_DEFAULTS, **req.params}
+
+        references, ref_text = [], None
+        if voice_meta:
+            clip = self.vault.reference_path(voice_meta["id"])
+            if not clip.exists():
+                raise SonorusError(f"'{voice_meta['name']}' has no stored reference clip, so Fish Speech can't use it.")
+            references.append((clip.read_bytes(), voice_meta.get("ref_text") or ""))
+        elif req.ref_audio:
+            ref_text = (req.ref_text or "").strip() or self._transcribe(req.ref_audio)
+            references.append((Path(req.ref_audio).read_bytes(), ref_text))
+
+        with self._gen_lock:
+            self.busy = True
+            try:
+                started = time.time()
+                audio, sr = self.fish.tts(text, references, seed, req.normalize_text, params)
+                elapsed = time.time() - started
+            except FishError as exc:
+                raise SonorusError(str(exc)) from exc
+            finally:
+                self.busy = False
+
+        details = {
+            "ref_text": ref_text,
+            "instruct": None,
+            "language": None,
+            "speed": None,
+            "duration_target": None,
+            "normalize_text": req.normalize_text,
+            "params": {k: v for k, v in params.items() if v != FISH_PARAM_DEFAULTS[k]},
+            "device": f"fish-speech {self.fish.model}",
+        }
+        return audio, sr, elapsed, details
 
 
 def request_from_dict(data: dict) -> SpeakRequest:
@@ -531,6 +631,6 @@ def request_from_dict(data: dict) -> SpeakRequest:
 
 
 __all__ = [
-    "AUDIO_FORMATS", "DESIGN_ATTRIBUTES", "Engine", "GENERATION_PARAMS", "NONVERBAL_TAGS", "PARAM_DEFAULTS",
+    "AUDIO_FORMATS", "DESIGN_ATTRIBUTES", "ENGINES", "Engine", "GENERATION_PARAMS", "NONVERBAL_TAGS", "PARAM_DEFAULTS",
     "SonorusError", "SpeakRequest", "list_languages", "normalization_available", "request_from_dict",
 ]

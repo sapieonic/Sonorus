@@ -66,13 +66,14 @@ const BREW_LINES = [
 const S = {
   options: null,
   status: null,
+  engine: store.get("engine", "omnivoice"),
   mode: store.get("mode", "clone"),
   source: store.get("source", "vault"),
   voice: store.get("voice", null),
   voices: [],
   ref: null, // { wav: Blob, samples: Float32Array, duration, name }
   design: {},
-  params: store.get("params", {}),
+  params: {}, // knobs changed from the current engine's defaults
   history: [],
   last: null, // { item, request }
 };
@@ -98,35 +99,88 @@ async function pollStatus() {
   try { st = await api("/api/status"); }
   catch { st = { state: "offline", message: "The server is unreachable. Is `sonorus serve` running?" }; }
   S.status = st;
+  renderStatus();
+  statusTimer = setTimeout(pollStatus, engineStatus().state === "ready" ? 8000 : 1500);
+}
+
+/** Status of the selected engine; the server reports one entry per engine. */
+function engineStatus() {
+  const st = S.status;
+  if (!st || st.state === "offline") return st || { state: "offline", message: "" };
+  return { ...((st.engines || {})[S.engine] || st), busy: st.busy, device: st.device, dtype: st.dtype };
+}
+
+function renderStatus() {
+  const st = engineStatus();
   const el = $("#status");
   const state = st.state === "ready" && st.busy ? "busy" : st.state;
   el.dataset.state = state;
   const text = {
-    ready: `Wand ready · ${st.device} · ${st.dtype}`,
+    ready: S.engine === "fish" ? `Fish Speech ready · ${st.model}` : `Wand ready · ${st.device} · ${st.dtype}`,
     busy: "Casting a spell…",
   }[state] || st.message;
   $("#status-text").textContent = text;
   el.title = st.message || "";
   updateCast();
-  statusTimer = setTimeout(pollStatus, st.state === "ready" ? 8000 : 1500);
 }
 
 function updateCast() {
-  const state = S.status ? S.status.state : "offline";
+  const state = engineStatus().state;
   // "idle" = server started with --lazy: the first spell loads the model.
   const usable = state === "ready" || state === "idle";
   const btn = $("#cast");
   btn.disabled = !usable || S.casting;
-  $(".cast-label", btn).textContent = S.casting ? "Casting…" : usable ? "Sonorus!" : state === "error" ? "Wand broken" : state === "offline" ? "No wand found" : "Waking the wand…";
+  $(".cast-label", btn).textContent = S.casting ? "Casting…" : usable ? "Sonorus!" : state === "error" ? "Wand broken" : state === "offline" ? "No wand found" : state === "disabled" ? "Wand not set up" : "Waking the wand…";
   $(".cast-sub", btn).textContent = {
     ready: "Ctrl + Enter", idle: "Ctrl + Enter · the first spell wakes the model",
-    error: "see the status above", offline: "is `sonorus serve` running?",
+    error: "see the status above", offline: "is `sonorus serve` running?", disabled: "pick the other engine at the top",
   }[state] || "model is loading, hang tight";
+}
+
+/* ============================== engines ============================== */
+const engineInfo = (id = S.engine) => S.options.engines.find((e) => e.id === id);
+const engineLabel = (id) => (S.options && engineInfo(id || "omnivoice")?.label) || id;
+// Changed knobs are remembered per engine ("params" alone is from before Fish Speech existed).
+const loadParams = (id) => store.get(`params.${id}`, id === "omnivoice" ? store.get("params", {}) : {});
+const saveParams = () => store.set(`params.${S.engine}`, S.params);
+
+function buildEngines() {
+  $("#engines").replaceChildren(...S.options.engines.map((e) => h("button", {
+    class: "engine-btn", role: "radio", "data-engine": e.id, disabled: !e.available,
+    title: e.available ? `Cast with ${e.label}` : `${e.label} isn't set up on this server (SONORUS_FISH_URL)`,
+    onclick: () => { if (e.id !== S.engine) { setEngine(e.id); toast(`${e.label} is now your wand core.`, "ok", 1800); } },
+  }, e.label)));
+}
+
+function setEngine(id) {
+  if (!engineInfo(id)?.available) id = "omnivoice";
+  S.engine = id;
+  store.set("engine", id);
+  const eng = engineInfo();
+  $$(".engine-btn").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.engine === id)));
+  $$("[data-feature]").forEach((el) => (el.hidden = !eng.features[el.dataset.feature]));
+  if (!eng.features.design && S.mode === "design") setMode("auto");
+  $("#tags").replaceChildren(...eng.nonverbal.map((t) => h("button", { class: "tag", title: t.tag, onclick: () => insertAtCursor(t.tag) }, t.label)));
+
+  const norm = eng.features.normalize;
+  $("#normalize").disabled = !norm;
+  $("#normalize").checked = norm && store.get("normalize", false);
+  $("#normalize-wrap").classList.toggle("disabled", !norm);
+  $("#normalize-wrap").title = norm ? "" : "Install the extra to enable: pip install 'omnivoice[tn]'";
+
+  $("#ref-range").textContent = eng.ref_seconds.join("–");
+  if (S.ref) setRefWarn();
+  $("#restricted-sub").textContent = `every ${eng.label} knob`;
+  $("#reset-params").textContent = `Reset to ${eng.label} defaults`;
+  S.params = loadParams(id);
+  buildParams();
+  if (S.status) renderStatus();
 }
 
 /* ============================== modes ============================== */
 const MODES = ["clone", "design", "auto"];
 function setMode(mode) {
+  if (mode === "design" && S.options && !engineInfo().features.design) mode = "auto";
   S.mode = mode;
   store.set("mode", mode);
   history.replaceState(null, "", `#${mode}`); // deep-linkable: /#design
@@ -240,13 +294,19 @@ async function setRef(blob, name) {
   $(".drop-empty").hidden = true;
   $(".drop-full").hidden = false;
   $("#ref-info").textContent = `${name} · ${S.ref.duration.toFixed(1)} s`;
+  setRefWarn();
+  drawMini();
+}
+
+function setRefWarn() {
+  const [lo, hi] = S.options ? engineInfo().ref_seconds : [3, 10];
   const d = S.ref.duration;
   const warn = $("#ref-warn");
-  warn.hidden = d >= 2.5 && d <= 15;
-  warn.textContent = d < 2.5
-    ? "That's a very short sample. 3–10 seconds of clear speech clones much better."
-    : "That's a long sample. 3–10 seconds works best; longer clips are slower and can sound worse. Clips over 20 s get trimmed when no transcript is given.";
-  drawMini();
+  warn.hidden = d >= lo - 0.5 && d <= hi * 1.5;
+  warn.textContent = d < lo - 0.5
+    ? `That's a very short sample. ${lo}–${hi} seconds of clear speech clones much better.`
+    : `That's a long sample. ${lo}–${hi} seconds works best; longer clips are slower and can sound worse.`
+      + (S.engine === "omnivoice" ? " Clips over 20 s get trimmed when no transcript is given." : "");
 }
 
 function clearRef() {
@@ -303,7 +363,8 @@ $("#record").addEventListener("click", async () => {
   const tick = () => {
     const s = (Date.now() - started) / 1000;
     $("span:last-child", btn).textContent = `Stop · ${s.toFixed(0)}s`;
-    if (s >= 15 && recorder) recorder.stop(); // keep clips short
+    const cap = S.options ? Math.max(15, engineInfo().ref_seconds[1]) : 15;
+    if (s >= cap && recorder) recorder.stop(); // keep clips short
   };
   tick();
   recordTimer = setInterval(tick, 250);
@@ -320,7 +381,8 @@ async function storeVoice(name) {
   fd.append("name", name);
   fd.append("ref_audio", S.ref.wav, "reference.wav");
   fd.append("ref_text", $("#ref-text").value.trim());
-  fd.append("preprocess", String(paramValue("preprocess_prompt")));
+  // Vault voices are always prepared by OmniVoice (it also transcribes), whichever engine is selected.
+  fd.append("preprocess", String(paramValue("preprocess_prompt", "omnivoice")));
   const meta = await api("/api/voices", { method: "POST", body: fd });
   await loadVoices();
   selectVoice(meta.id);
@@ -430,20 +492,24 @@ $("#dice").addEventListener("click", () => {
 $("#normalize").addEventListener("change", (e) => store.set("normalize", e.target.checked));
 $("#format").addEventListener("change", (e) => store.set("format", e.target.value));
 
-const paramDefault = (key) => S.options.params.find((p) => p.key === key).default;
-const paramValue = (key) => (key in S.params ? S.params[key] : paramDefault(key));
+const paramDefault = (key, id = S.engine) => engineInfo(id).params.find((p) => p.key === key).default;
+function paramValue(key, id = S.engine) {
+  const changed = id === S.engine ? S.params : loadParams(id);
+  return key in changed ? changed[key] : paramDefault(key, id);
+}
 
 function setParam(key, value) {
   if (value === paramDefault(key)) delete S.params[key];
   else S.params[key] = value;
-  store.set("params", S.params);
+  saveParams();
   syncParams();
 }
 
 function buildParams() {
   const box = $("#params");
+  box.replaceChildren();
   const groups = {};
-  for (const p of S.options.params) (groups[p.group] ||= []).push(p);
+  for (const p of engineInfo().params) (groups[p.group] ||= []).push(p);
   for (const [group, list] of Object.entries(groups)) {
     const g = h("div", { class: "param-group" }, h("h4", {}, group));
     for (const p of list) {
@@ -470,7 +536,7 @@ function buildParams() {
 }
 
 function syncParams() {
-  for (const p of S.options.params) {
+  for (const p of engineInfo().params) {
     const v = paramValue(p.key);
     $$(`[data-key="${p.key}"]`).forEach((el) => {
       if (el.type === "checkbox") el.checked = v;
@@ -478,25 +544,27 @@ function syncParams() {
     });
     $(`[data-param="${p.key}"]`).classList.toggle("changed", p.key in S.params);
   }
+  if (!engineInfo().features.presets) return;
   $$("[data-preset]").forEach((b) => b.setAttribute("aria-selected", String(Number(b.dataset.preset) === paramValue("num_step"))));
 }
 
 $$("[data-preset]").forEach((b) => b.addEventListener("click", () => setParam("num_step", Number(b.dataset.preset))));
-$("#reset-params").addEventListener("click", () => { S.params = {}; store.set("params", S.params); syncParams(); toast("Restricted Section restored to OmniVoice's defaults.", "ok", 2000); });
+$("#reset-params").addEventListener("click", () => { S.params = {}; saveParams(); syncParams(); toast(`Restricted Section restored to ${engineLabel(S.engine)}'s defaults.`, "ok", 2000); });
 
 /* ============================== casting ============================== */
 function collectRequest() {
   const text = textEl.value.trim();
   if (!text) throw new Error("The incantation is empty. Write something for the voice to say.");
-  const req = { text, params: { ...S.params }, format: $("#format").value, normalize_text: $("#normalize").checked };
-  const lang = resolveLanguage();
+  const f = engineInfo().features;
+  const req = { text, engine: S.engine, params: { ...S.params }, format: $("#format").value, normalize_text: f.normalize && $("#normalize").checked };
+  const lang = f.language ? resolveLanguage() : null;
   if (lang) req.language = lang;
-  if ($("#use-duration").checked) req.duration = parseFloat($("#duration").value);
-  else if (speedSet) req.speed = parseFloat($("#speed").value);
+  if (f.duration && $("#use-duration").checked) req.duration = parseFloat($("#duration").value);
+  else if (f.speed && speedSet) req.speed = parseFloat($("#speed").value);
   if ($("#use-seed").checked) req.seed = parseInt($("#seed").value, 10);
 
   if (S.mode === "clone") {
-    const hints = $("#clone-instruct").value.trim();
+    const hints = f.style_hints ? $("#clone-instruct").value.trim() : "";
     if (hints) req.instruct = hints;
     if (S.source === "vault") {
       if (!S.voice) throw new Error(S.voices.length ? "Pick a voice from your vault first." : "Your vault is empty. Add a fresh sample to clone a voice.");
@@ -566,7 +634,7 @@ async function cast() {
       delete req.fresh; delete req.ref_text;
       req.voice = meta.id;
     }
-    brewing(true, S.status && S.status.state === "idle" ? "Waking the wand: the first spell also loads the model…" : undefined);
+    brewing(true, engineStatus().state === "idle" ? "Waking the wand: the first spell also loads the model…" : undefined);
     const fd = new FormData();
     for (const [k, v] of Object.entries(req)) {
       if (k === "params") fd.append("params", JSON.stringify(v));
@@ -653,6 +721,7 @@ function showResult() {
   const meta = $("#result-meta");
   meta.replaceChildren(
     h("span", {}, h("b", {}, who)),
+    h("span", {}, "by ", h("b", {}, engineLabel(item.engine || "omnivoice"))),
     h("span", {}, h("b", {}, `${item.seconds.toFixed(1)}s`), " of speech"),
     h("span", {}, "cast in ", h("b", {}, `${item.elapsed.toFixed(1)}s`), speedNote ? ` (${speedNote})` : ""),
     h("span", {}, "seed ", h("b", {}, item.seed)),
@@ -692,6 +761,7 @@ $("#pin-seed").addEventListener("click", () => {
 
 function cliCommand(item, req) {
   const parts = ["sonorus", "speak", shellQuote(item.text)];
+  if (item.engine === "fish") parts.push("-e", "fish");
   if (item.voice) parts.push("-v", shellQuote(item.voice));
   else if (item.mode === "clone") parts.push("-r", "your-clip.wav", ...(req && req.ref_text ? ["-t", shellQuote(req.ref_text)] : []));
   if (item.instruct) parts.push("-d", shellQuote(item.instruct));
@@ -703,7 +773,8 @@ function cliCommand(item, req) {
   const flag = { num_step: "--steps", guidance_scale: "--guidance", t_shift: "--t-shift", position_temperature: "--position-temp",
     class_temperature: "--token-temp", layer_penalty_factor: "--layer-penalty", pad_duration: "--pad", fade_duration: "--fade",
     audio_chunk_duration: "--chunk-duration", audio_chunk_threshold: "--chunk-threshold",
-    denoise: "--denoise", preprocess_prompt: "--preprocess", postprocess_output: "--postprocess" };
+    denoise: "--denoise", preprocess_prompt: "--preprocess", postprocess_output: "--postprocess",
+    temperature: "--temperature", top_p: "--top-p", chunk_length: "--chunk-length", max_new_tokens: "--max-tokens" };
   for (const [k, v] of Object.entries(item.params || {})) {
     if (typeof v === "boolean") parts.push(v ? flag[k] : flag[k].replace("--", "--no-"));
     else parts.push(flag[k], v);
@@ -752,7 +823,7 @@ async function loadHistory() {
 function renderHistory() {
   const list = $("#history");
   const q = $("#history-search").value.trim().toLowerCase();
-  const items = S.history.filter((i) => !q || [i.text, i.voice_name, i.instruct, i.mode].join(" ").toLowerCase().includes(q));
+  const items = S.history.filter((i) => !q || [i.text, i.voice_name, i.instruct, i.mode, i.engine].join(" ").toLowerCase().includes(q));
   $("#history-empty").hidden = S.history.length > 0;
   $("#clear-history").hidden = S.history.length === 0;
   list.replaceChildren(...items.map((i) => {
@@ -762,7 +833,8 @@ function renderHistory() {
       h("button", { class: "mplay", title: "Play", onclick: () => playMemory(i) }, playingId === i.id ? "❚❚" : "▶"),
       h("div", { style: "min-width:0" },
         h("p", { class: "mtext", title: i.text }, i.text),
-        h("p", { class: "msub" }, h("span", { class: "badge" }, label), `${who} · ${i.seconds.toFixed(1)}s · ${ago(i.created)}`)),
+        h("p", { class: "msub" }, h("span", { class: "badge" }, label), i.engine === "fish" ? h("span", { class: "badge alt" }, "FISH") : null,
+          `${who} · ${i.seconds.toFixed(1)}s · ${ago(i.created)}`)),
       h("div", { class: "mactions" },
         h("button", { title: "Priori Incantatem: reuse these settings", onclick: () => reuse(i) }, "↺"),
         h("a", { title: "Download", href: `${i.url}?download=true` }, "⬇"),
@@ -790,6 +862,11 @@ $("#clear-history").addEventListener("click", async () => {
 });
 
 function reuse(i) {
+  const eng = i.engine || "omnivoice";
+  if (eng !== S.engine) {
+    if (!engineInfo(eng)?.available) { toast(`That memory was cast with ${engineLabel(eng)}, which isn't set up here.`, "error"); return; }
+    setEngine(eng);
+  }
   textEl.value = i.text; updateCount();
   if (i.mode === "clone" && i.voice && S.voices.some((v) => v.id === i.voice)) {
     setMode("clone"); setSource("vault"); selectVoice(i.voice);
@@ -810,7 +887,7 @@ function reuse(i) {
   $("#use-seed").checked = true; $("#seed").value = i.seed; $("#use-seed").dispatchEvent(new Event("change"));
   $("#normalize").checked = !!i.normalize_text;
   $("#format").value = i.format;
-  S.params = { ...(i.params || {}) }; store.set("params", S.params); syncParams();
+  S.params = { ...(i.params || {}) }; saveParams(); syncParams();
   window.scrollTo({ top: 0, behavior: "smooth" });
   toast("Priori Incantatem! Settings restored, seed pinned.", "ok", 2200);
 }
@@ -825,21 +902,12 @@ async function boot() {
   try { S.options = await api("/api/options"); }
   catch { toast("Couldn't reach the server. Start it with `sonorus serve`.", "error", 10000); return; }
 
-  $("#tags").append(...S.options.nonverbal.map((t) => h("button", { class: "tag", title: t.tag, onclick: () => insertAtCursor(t.tag) }, t.label)));
   $("#lang-list").append(...S.options.languages.map((l) => h("option", { value: `${l.name} (${l.id})` })));
   $("#format").append(...S.options.formats.map((f) => h("option", { value: f }, f.toUpperCase())));
   $("#format").value = store.get("format", "wav");
   buildDesign();
-  buildParams();
-
-  if (!S.options.normalization) {
-    $("#normalize").disabled = true;
-    $("#normalize").checked = false;
-    $("#normalize-wrap").classList.add("disabled");
-    $("#normalize-wrap").title = "Install the extra to enable: pip install 'omnivoice[tn]'";
-  } else {
-    $("#normalize").checked = store.get("normalize", false);
-  }
+  buildEngines();
+  setEngine(S.engine);
 
   textEl.value = store.get("text", "") || SAMPLES[0];
   updateCount();

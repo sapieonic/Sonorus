@@ -31,6 +31,11 @@ class Settings:
     port: int = field(default_factory=lambda: int(_env("SONORUS_PORT", "7860")))
     # Keep at most this many items in the Pensieve (history).
     history_limit: int = field(default_factory=lambda: int(_env("SONORUS_HISTORY_LIMIT", "200")))
+    # A fish-speech API server (tools/api_server.py) to offer as a second engine. Unset = OmniVoice only.
+    fish_url: str | None = field(default_factory=lambda: _env("SONORUS_FISH_URL"))
+    fish_api_key: str | None = field(default_factory=lambda: _env("SONORUS_FISH_API_KEY"))
+    # Display name of the checkpoint the fish server loaded.
+    fish_model: str = field(default_factory=lambda: _env("SONORUS_FISH_MODEL", "S2-Pro"))
 
     @property
     def voices_dir(self) -> Path:

@@ -27,6 +27,7 @@
       </div>
     </div>
     <div class="top-right">
+      <div id="engines" class="engines" role="radiogroup" aria-label="Speech engine"></div>
       <div class="houses" role="radiogroup" aria-label="House theme">
         <button class="house-btn" data-house="gryffindor" title="Gryffindor" role="radio"><span></span></button>
         <button class="house-btn" data-house="slytherin" title="Slytherin" role="radio"><span></span></button>
@@ -48,7 +49,7 @@
           <button class="mode" role="tab" data-mode="clone">
             <span class="mode-icon">🧪</span><b>Polyjuice Potion</b><small>Clone a voice</small>
           </button>
-          <button class="mode" role="tab" data-mode="design">
+          <button class="mode" role="tab" data-mode="design" data-feature="design">
             <span class="mode-icon">✨</span><b>Transfiguration</b><small>Design a voice</small>
           </button>
           <button class="mode" role="tab" data-mode="auto">
@@ -75,7 +76,7 @@
               <input id="ref-file" type="file" accept="audio/*" hidden>
               <div class="drop-empty">
                 <div class="drop-icon">🪶</div>
-                <p><b>Drop a 3–10 second clip</b> of clean speech, or</p>
+                <p><b>Drop a <span id="ref-range">3–10</span> second clip</b> of clean speech, or</p>
                 <div class="row center">
                   <button class="btn ghost" id="pick-file">Choose a file</button>
                   <button class="btn ghost" id="record"><span class="rec-dot"></span><span>Record</span></button>
@@ -103,7 +104,7 @@
             </div>
           </div>
 
-          <label class="field">
+          <label class="field" data-feature="style_hints">
             <span>Style hints <em>optional: attributes that match the voice can steady the clone</em></span>
             <input id="clone-instruct" class="input" placeholder="e.g. elderly, british accent">
           </label>
@@ -140,7 +141,7 @@
         <textarea id="text" class="incantation" rows="6" placeholder="Type what the voice should say…  Use [laughter] or [sigh] for sounds, and [B EY1 S] (CMU phonemes) or pinyin like ZHE2 to fix pronunciation."></textarea>
         <div class="row between text-meta">
           <span id="text-count" class="hint">0 characters</span>
-          <span class="row lang-wrap">
+          <span class="row lang-wrap" data-feature="language">
             <label for="lang" class="hint">Language</label>
             <input id="lang" class="input" list="lang-list" placeholder="Auto-detect" autocomplete="off">
             <datalist id="lang-list"></datalist>
@@ -178,12 +179,12 @@
       <article class="card">
         <h2 class="card-title small">📖 Spellbook</h2>
 
-        <div class="setting">
+        <div class="setting" data-feature="speed">
           <div class="row between"><label for="speed">Speed</label><span class="row"><output id="speed-out">auto</output><button class="btn link tiny" id="speed-reset">reset</button></span></div>
           <input type="range" id="speed" min="0.5" max="2" step="0.05" value="1">
         </div>
 
-        <div class="setting">
+        <div class="setting" data-feature="duration">
           <div class="row between">
             <label class="check"><input type="checkbox" id="use-duration"> Exact length</label>
             <span class="row"><input id="duration" class="input num-in" type="number" min="0.5" max="600" step="0.5" value="5" disabled><span class="hint">sec</span></span>
@@ -199,7 +200,7 @@
           <p class="hint tight">Same seed + same settings = the same voice and delivery.</p>
         </div>
 
-        <div class="setting">
+        <div class="setting" data-feature="presets">
           <label>Quality</label>
           <div class="seg presets">
             <button class="seg-btn" data-preset="16">Swift<small>16 steps</small></button>
@@ -214,7 +215,7 @@
         </div>
 
         <details class="restricted">
-          <summary><span>🔒 Restricted Section</span><small>every OmniVoice knob</small></summary>
+          <summary><span>🔒 Restricted Section</span><small id="restricted-sub">every OmniVoice knob</small></summary>
           <div id="params"></div>
           <button id="reset-params" class="btn ghost full">Reset to OmniVoice defaults</button>
         </details>
@@ -234,7 +235,8 @@
   </main>
 
   <footer class="foot">
-    Powered by <a href="https://github.com/k2-fsa/OmniVoice" target="_blank" rel="noopener">OmniVoice</a> ·
+    Powered by <a href="https://github.com/k2-fsa/OmniVoice" target="_blank" rel="noopener">OmniVoice</a> and
+    <a href="https://github.com/fishaudio/fish-speech" target="_blank" rel="noopener">Fish Speech</a> ·
     also on the command line: <code>sonorus speak "Mischief managed." --play</code>
   </footer>
 

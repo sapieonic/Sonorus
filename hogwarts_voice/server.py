@@ -26,6 +26,7 @@ from .engine import (
     list_languages,
     normalization_available,
 )
+from .fish import FISH_PARAMS, FISH_TAGS
 
 STATIC_DIR = Path(__file__).parent / "static"
 MEDIA_TYPES = {"wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg"}
@@ -69,6 +70,8 @@ def create_app(settings: Settings | None = None, preload: bool = True) -> FastAP
 
     @app.get("/api/options")
     def options():
+        omni_features = {"design": True, "style_hints": True, "language": True, "speed": True, "duration": True,
+                         "presets": True, "normalize": normalization_available()}
         return {
             "version": __version__,
             "params": GENERATION_PARAMS,
@@ -76,7 +79,16 @@ def create_app(settings: Settings | None = None, preload: bool = True) -> FastAP
             "design": DESIGN_ATTRIBUTES,
             "formats": list(AUDIO_FORMATS),
             "languages": list_languages(),
-            "normalization": normalization_available(),
+            "normalization": omni_features["normalize"],
+            # What the UI shows per engine. ref_seconds is the reference clip length each one likes best.
+            "engines": [
+                {"id": "omnivoice", "label": "OmniVoice", "available": True, "params": GENERATION_PARAMS,
+                 "nonverbal": [{"tag": t, "label": l} for t, l in NONVERBAL_TAGS],
+                 "features": omni_features, "ref_seconds": [3, 10]},
+                {"id": "fish", "label": "Fish Speech", "available": engine.fish is not None, "params": FISH_PARAMS,
+                 "nonverbal": [{"tag": t, "label": l} for t, l in FISH_TAGS],
+                 "features": {k: False for k in omni_features} | {"normalize": True}, "ref_seconds": [5, 30]},
+            ],
         }
 
     # -- speech -------------------------------------------------------------
@@ -94,6 +106,7 @@ def create_app(settings: Settings | None = None, preload: bool = True) -> FastAP
         normalize_text: bool = Form(False),
         format: str = Form("wav"),
         params: str = Form("{}"),
+        engine_id: str = Form("omnivoice", alias="engine"),
         ref_audio: UploadFile | None = File(None),
     ):
         try:
@@ -104,7 +117,7 @@ def create_app(settings: Settings | None = None, preload: bool = True) -> FastAP
             req = SpeakRequest(
                 text=text, voice=voice or None, ref_audio=_save_upload(ref_audio, tmp), ref_text=ref_text,
                 instruct=instruct, language=language or None, speed=speed, duration=duration, seed=seed,
-                normalize_text=normalize_text, format=format, params=parsed,
+                normalize_text=normalize_text, format=format, params=parsed, engine=engine_id,
             )
             item = engine.speak(req)
         return {**item, "url": f"/api/history/{item['id']}/audio"}
