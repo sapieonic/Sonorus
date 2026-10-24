@@ -143,6 +143,10 @@ const engineLabel = (id) => (S.options && engineInfo(id || "omnivoice")?.label) 
 // Changed knobs are remembered per engine ("params" alone is from before Fish Speech existed).
 const loadParams = (id) => store.get(`params.${id}`, id === "omnivoice" ? store.get("params", {}) : {});
 const saveParams = () => store.set(`params.${S.engine}`, S.params);
+const TEXT_HINTS = {
+  omnivoice: "Type what the voice should say…  Use [laughter] or [sigh] for sounds, and [B EY1 S] (CMU phonemes) or pinyin like ZHE2 to fix pronunciation.",
+  fish: "Type what the voice should say…  Steer the delivery with tags like [whisper], [excited] or [pause] anywhere in the text.",
+};
 
 function buildEngines() {
   $("#engines").replaceChildren(...S.options.engines.map((e) => h("button", {
@@ -166,7 +170,8 @@ function setEngine(id) {
   $("#normalize").disabled = !norm;
   $("#normalize").checked = norm && store.get("normalize", false);
   $("#normalize-wrap").classList.toggle("disabled", !norm);
-  $("#normalize-wrap").title = norm ? "" : "Install the extra to enable: pip install 'omnivoice[tn]'";
+  $("#normalize-wrap").title = norm ? "" : id === "fish" ? "Fish Speech reads numbers on its own" : "Install the extra to enable: pip install 'omnivoice[tn]'";
+  textEl.placeholder = TEXT_HINTS[id] || TEXT_HINTS.omnivoice;
 
   $("#ref-range").textContent = eng.ref_seconds.join("–");
   if (S.ref) setRefWarn();
@@ -266,13 +271,14 @@ function encodeWav(samples, sr) {
   return new Blob([buf], { type: "audio/wav" });
 }
 
-/** Decode anything the browser can play, downmix to mono 24 kHz WAV. No ffmpeg needed server-side. */
+/** Decode anything the browser can play, downmix to mono 44.1 kHz WAV. No ffmpeg needed server-side.
+ *  OmniVoice resamples to 24 kHz itself; Fish Speech's codec works at 44.1 kHz, so keep that much detail. */
 async function toWav(blob) {
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
   let decoded;
   try { decoded = await ctx.decodeAudioData(await blob.arrayBuffer()); }
   finally { ctx.close(); }
-  const sr = 24000;
+  const sr = 44100;
   const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * sr)), sr);
   const src = off.createBufferSource();
   src.buffer = decoded;
@@ -302,7 +308,8 @@ function setRefWarn() {
   const [lo, hi] = S.options ? engineInfo().ref_seconds : [3, 10];
   const d = S.ref.duration;
   const warn = $("#ref-warn");
-  warn.hidden = d >= lo - 0.5 && d <= hi * 1.5;
+  // OmniVoice copes with a bit over its range; Fish's Whisper transcript and cloning both prefer staying within it.
+  warn.hidden = d >= lo - 0.5 && d <= (S.engine === "fish" ? hi : hi * 1.5);
   warn.textContent = d < lo - 0.5
     ? `That's a very short sample. ${lo}–${hi} seconds of clear speech clones much better.`
     : `That's a long sample. ${lo}–${hi} seconds works best; longer clips are slower and can sound worse.`
@@ -641,7 +648,7 @@ async function cast() {
       else if (k !== "fresh") fd.append(k, String(v));
     }
     if (req.fresh) fd.append("ref_audio", S.ref.wav, "reference.wav");
-    const item = await api("/api/speak", { method: "POST", body: fd });
+    const item = await speakJob(fd);
     S.last = { item, request: req, ref: req.fresh ? S.ref : null };
     showResult();
     loadHistory();
@@ -653,6 +660,16 @@ async function cast() {
     updateCast();
     pollStatus();
   }
+}
+/** Start a speak job and poll it: proxies such as RunPod's cut requests that run past ~100 s. */
+async function speakJob(fd) {
+  let job = await api("/api/speak?wait=false", { method: "POST", body: fd });
+  while (job.state === "running") {
+    await new Promise((r) => setTimeout(r, 1000));
+    job = await api(`/api/jobs/${job.job}`);
+  }
+  if (job.state === "error") throw new Error(job.detail);
+  return job.item;
 }
 $("#cast").addEventListener("click", cast);
 document.addEventListener("keydown", (e) => {
@@ -761,7 +778,7 @@ $("#pin-seed").addEventListener("click", () => {
 
 function cliCommand(item, req) {
   const parts = ["sonorus", "speak", shellQuote(item.text)];
-  if (item.engine === "fish") parts.push("-e", "fish");
+  parts.push("-e", item.engine || "omnivoice");
   if (item.voice) parts.push("-v", shellQuote(item.voice));
   else if (item.mode === "clone") parts.push("-r", "your-clip.wav", ...(req && req.ref_text ? ["-t", shellQuote(req.ref_text)] : []));
   if (item.instruct) parts.push("-d", shellQuote(item.instruct));

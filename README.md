@@ -7,7 +7,7 @@ You get a web UI with every option of both engines, plus a `sonorus` CLI for scr
 
 | Spell | What it does |
 |---|---|
-| 🧪 **Polyjuice Potion** | Clone a voice from a 3–10 s clip (upload, drag-drop or record in the browser) |
+| 🧪 **Polyjuice Potion** | Clone a voice from a short clip (upload, drag-drop or record in the browser) |
 | ✨ **Transfiguration** | Design a voice from attributes: gender, age, pitch, whisper, English accent, Chinese dialect |
 | 🎩 **Sorting Hat** | Let the model pick a voice |
 | 🏦 **Gringotts Vault** | Saved voices, reusable from the UI and CLI |
@@ -35,7 +35,8 @@ The model (~3.3 GB) downloads from Hugging Face on first run into `~/.cache/hugg
 | Runs | in-process, on CUDA / Apple MPS / CPU | as a separate fish-speech API server; needs an NVIDIA GPU with 24 GB+ |
 | Cloning | 3–10 s clip | 10–30 s clip works best |
 | Voice design (gender, age, accent…) | yes | no |
-| Speed / exact length / language | yes | no (it detects the language) |
+| Speed / exact length / language / spell out numbers | yes | no (it detects the language and reads numbers itself) |
+| Long text | split by OmniVoice | split by Sonorus at sentence ends ("Piece length"), then joined |
 | Expressive control | sound tags like `[laughter]`, `[sigh]` | free-form tags like `[whisper]`, `[excited]`, `[pause]` |
 
 OmniVoice is always on. To add Fish Speech, start a fish-speech API server and point Sonorus at it with
@@ -102,8 +103,9 @@ the UI's Pensieve). Otherwise the CLI loads the model itself. Use `--local` or `
 
 ## API
 
-`GET /api/status` · `GET /api/options` · `POST /api/speak` (multipart: `text`, `engine` (`omnivoice`/`fish`), `voice`, `ref_audio`,
-`ref_text`, `instruct`, `language`, `speed`, `duration`, `seed`, `normalize_text`, `format`, `params` as JSON) ·
+`GET /api/status` (per-engine state under `engines`) · `GET /api/options` · `POST /api/speak` (multipart: `text`, `engine` (`omnivoice`/`fish`), `voice`, `ref_audio`,
+`ref_text`, `instruct`, `language`, `speed`, `duration`, `seed`, `normalize_text`, `format`, `params` as JSON;
+add `?wait=false` to get a job id back at once, then poll `GET /api/jobs/{id}`) ·
 `GET|POST /api/voices` · `DELETE /api/voices/{id}` · `GET /api/history` · `GET /api/history/{id}/audio` ·
 `DELETE /api/history/{id}`. Interactive docs at `/docs`.
 
@@ -114,7 +116,8 @@ the UI's Pensieve). Otherwise the CLI loads the model itself. Use `--local` or `
   On small GPUs the audio codec and Whisper run on the CPU automatically to avoid out-of-memory errors.
 - Swift (16 steps) is ~2× faster than Balanced (32) but slightly less clear; use Balanced or Masterwork for final takes.
 
-- Reference clips: 3–10 s of clean speech in the same language as the target text gives the best clone.
+- Reference clips: clean speech in the same language as the target text gives the best clone; 3–10 s for OmniVoice,
+  10–30 s for Fish Speech.
 - Voice design is trained on English and Chinese; other languages may be unstable.
 - The CLI reads WAV/FLAC/OGG reference clips directly; MP3/M4A need ffmpeg on the system.
   The browser UI converts any format it can play to WAV before uploading, so no ffmpeg needed there.

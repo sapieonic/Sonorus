@@ -19,23 +19,34 @@ log() { echo "[start $(date +%H:%M:%S)] $*"; }
 
 if [ -n "${PUBLIC_KEY:-}" ]; then
     mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    grep -qxF "$PUBLIC_KEY" ~/.ssh/authorized_keys 2>/dev/null || echo "$PUBLIC_KEY" >> ~/.ssh/authorized_keys
+    touch ~/.ssh/authorized_keys
+    # PUBLIC_KEY can hold several keys, one per line; add each one that's missing.
+    while IFS= read -r key; do
+        if [ -n "$key" ] && ! grep -qxF "$key" ~/.ssh/authorized_keys; then
+            echo "$key" >> ~/.ssh/authorized_keys
+        fi
+    done <<< "$PUBLIC_KEY"
     chmod 600 ~/.ssh/authorized_keys
     ssh-keygen -A >/dev/null
     /usr/sbin/sshd
     log "sshd started"
 fi
 
-mkdir -p "$HF_HOME" "$SONORUS_HOME" "$(dirname "$FISH_DIR")"
+mkdir -p "$HF_HOME" "$SONORUS_HOME" "$FISH_DIR"
 
 run_fish() {
-    if [ ! -f "$FISH_DIR/.complete" ]; then
-        log "Downloading fishaudio/$FISH_MODEL to $FISH_DIR (one time)…"
-        /app/.venv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('fishaudio/$FISH_MODEL', local_dir='$FISH_DIR')"
-        touch "$FISH_DIR/.complete"
-    fi
+    # Retry until the weights are complete: a network blip or a full volume shouldn't disable Fish for good.
+    until [ -f "$FISH_DIR/.complete" ]; do
+        log "Downloading fishaudio/$FISH_MODEL to $FISH_DIR (one time, ~11 GB for s2-pro)…"
+        if /app/.venv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('fishaudio/$FISH_MODEL', local_dir='$FISH_DIR')"; then
+            touch "$FISH_DIR/.complete"
+        else
+            log "Download failed (network, or is the volume full?); retrying in 30 s"
+            sleep 30
+        fi
+    done
     local extra=()
-    [ "$FISH_COMPILE" = 1 ] && extra+=(--compile)
+    if [ "$FISH_COMPILE" = 1 ]; then extra+=(--compile); fi
     cd /app
     while true; do
         log "Starting Fish Speech ($FISH_MODEL) on 127.0.0.1:$FISH_PORT"

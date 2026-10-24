@@ -37,9 +37,12 @@ PARAM_FLAGS = {
 FISH_FLAGS = {
     "temperature": (float, ["--temperature"], "Sampling temperature, 0.1-1.0 (default 0.7)."),
     "top_p": (float, ["--top-p"], "Nucleus sampling cut-off, 0.1-1.0 (default 0.7)."),
-    "chunk_length": (int, ["--chunk-length"], "Characters per long-form chunk, 100-1000 (default 200)."),
-    "max_new_tokens": (int, ["--max-tokens"], "Max frames per chunk, 0 = model cap (default 1024)."),
+    "chunk_length": (int, ["--chunk-length"], "Long text is spoken in pieces of about this many characters, 100-1000 (default 300)."),
+    "max_new_tokens": (int, ["--max-tokens"], "Max frames per piece, about 47 s at 1024; 0 = model cap (default 1024)."),
 }
+
+# How long `speak` waits for an engine that is still loading (a fresh pod downloads ~16 GB first).
+WAIT_SECONDS = int(os.environ.get("SONORUS_WAIT", "1200"))
 
 GOLD, GREEN, RED, DIM, BOLD, RESET = "\033[33m", "\033[32m", "\033[31m", "\033[2m", "\033[1m", "\033[0m"
 if not sys.stderr.isatty() or os.environ.get("NO_COLOR"):
@@ -72,7 +75,8 @@ class RemoteBackend:
         import httpx
 
         try:
-            return httpx.get(f"{url}/api/status", timeout=0.7).status_code == 200
+            # Generous: a pod behind RunPod's HTTPS proxy can be a slow round trip away.
+            return httpx.get(f"{url}/api/status", timeout=3).status_code == 200
         except httpx.HTTPError:
             return False
 
@@ -89,15 +93,19 @@ class RemoteBackend:
         import time
 
         shown = False
+        deadline = time.time() + WAIT_SECONDS
         while True:
             st = self.http.get("/api/status").json()
-            st = st.get("engines", {}).get(engine, st)
+            st = st.get("engines", {}).get(engine) or st
             if st["state"] == "ready":
                 return
             if st["state"] in ("error", "disabled"):
                 fail(st["message"])
             if st["state"] == "idle":
                 self.http.post("/api/load")
+            if time.time() > deadline:
+                waited = f"{WAIT_SECONDS // 60} min" if WAIT_SECONDS >= 60 else f"{WAIT_SECONDS} s"
+                fail(f"Gave up after {waited}: {st['message']} (set SONORUS_WAIT, in seconds, to wait longer)")
             if not shown:
                 say(f"{DIM}… {st['message']}{RESET}")
                 shown = True
@@ -107,15 +115,28 @@ class RemoteBackend:
         self.wait_ready(req["engine"])
         data = {k: v for k, v in req.items() if k not in ("ref_audio", "params") and v is not None}
         data["params"] = json.dumps(req.get("params") or {})
+        # Run as a job and poll, so long generations survive proxies that cut slow requests.
+        params = {"wait": "false"}
         if req.get("ref_audio"):
             with open(req["ref_audio"], "rb") as fh:
-                resp = self.http.post("/api/speak", data=data, files={"ref_audio": (Path(req["ref_audio"]).name, fh)})
+                resp = self.http.post("/api/speak", params=params, data=data,
+                                      files={"ref_audio": (Path(req["ref_audio"]).name, fh)})
         else:
-            resp = self.http.post("/api/speak", data=data)
-        item = self._check(resp).json()
+            resp = self.http.post("/api/speak", params=params, data=data)
+        item = self._poll(self._check(resp).json())
         out = output or Path(f"sonorus-{item['id']}.{item['format']}")
         out.write_bytes(self._check(self.http.get(item["url"])).content)
         return item, out
+
+    def _poll(self, job: dict) -> dict:
+        import time
+
+        while job["state"] == "running":
+            time.sleep(1)
+            job = self._check(self.http.get(f"/api/jobs/{job['job']}")).json()
+        if job["state"] == "error":
+            fail(job["detail"])
+        return job["item"]
 
     def clone(self, name, audio, text, description) -> dict:
         self.wait_ready()
@@ -175,7 +196,8 @@ def backend(args):
         url = (args.server or server_url()).rstrip("/")
         if RemoteBackend.probe(url):
             return RemoteBackend(url)
-        if args.server:
+        if args.server or os.environ.get("SONORUS_URL"):
+            # An explicitly named server is never silently swapped for a local model.
             fail(f"Could not reach a Sonorus server at {url}")
     return LocalBackend()
 
@@ -355,7 +377,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Speech engine. fish needs a server started with SONORUS_FISH_URL.")
     g = s.add_argument_group("voice (pick one; none = the model chooses)")
     g.add_argument("-v", "--voice", help="Saved voice from the vault (id or name).")
-    g.add_argument("-r", "--ref-audio", help="Clone a one-off voice from this 3-10 s clip.")
+    g.add_argument("-r", "--ref-audio", help="Clone a one-off voice from this clip (OmniVoice: 3-10 s, Fish Speech: 10-30 s).")
     g.add_argument("-t", "--ref-text", help="Transcript of --ref-audio (omit to auto-transcribe).")
     g.add_argument("-d", "--design", "--instruct", dest="design",
                    help='Voice design attributes, e.g. "male, elderly, low pitch, british accent". '
@@ -365,7 +387,7 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument("-s", "--speed", type=float, help="Speed factor, >1 faster, <1 slower.")
     o.add_argument("--duration", type=float, help="Exact output length in seconds (overrides --speed).")
     o.add_argument("--seed", type=int, help="Random seed for reproducible output.")
-    o.add_argument("--normalize", action="store_true", help="Spell out numbers (needs omnivoice[tn]).")
+    o.add_argument("--normalize", action="store_true", help="Spell out numbers (OmniVoice only, needs omnivoice[tn]).")
     o.add_argument("--format", choices=["wav", "flac", "ogg"], help="Audio format (default from -o, else wav).")
     o.add_argument("--play", action="store_true", help="Play the result when done.")
     adv = s.add_argument_group("advanced generation options (defaults are OmniVoice's)")
@@ -382,7 +404,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("clone", help="Save a voice to the vault from a short clip.")
     c.add_argument("name", help="Name for the voice.")
-    c.add_argument("audio", help="Reference clip, ideally 3-10 s of clean speech.")
+    c.add_argument("audio", help="Reference clip of clean speech: 3-10 s for OmniVoice, 10-30 s if you'll use it with Fish Speech.")
     c.add_argument("-t", "--text", help="What is said in the clip (omit to auto-transcribe with Whisper).")
     c.add_argument("--description", help="A note to remember the voice by.")
     conn(c)

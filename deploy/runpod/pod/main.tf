@@ -20,6 +20,15 @@ resource "runpod_registry" "image" {
   password = var.registry_password
 }
 
+resource "terraform_data" "registry_check" {
+  lifecycle {
+    precondition {
+      condition     = (var.registry_username == null) == (var.registry_password == null)
+      error_message = "Set both registry_username and registry_password (private image), or neither (public image)."
+    }
+  }
+}
+
 resource "runpod_pod" "sonorus" {
   name     = var.name
   image    = var.image
@@ -28,8 +37,8 @@ resource "runpod_pod" "sonorus" {
   gpu_type_id = var.gpu_type_id
   gpu_count   = 1
   cloud       = "SECURE"
-  # The image is built on CUDA 12.9; older host drivers can't run it.
-  min_cuda_version = "12.9"
+  # Both venvs use cu126 torch builds; hosts with older drivers can't run them.
+  min_cuda_version = "12.6"
 
   data_center_ids = [data.terraform_remote_state.volume.outputs.data_center_id]
   network_volumes = [{

@@ -6,10 +6,13 @@ import json
 import logging
 import shutil
 import tempfile
+import uuid
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -30,6 +33,7 @@ from .fish import FISH_PARAMS, FISH_TAGS
 
 STATIC_DIR = Path(__file__).parent / "static"
 MEDIA_TYPES = {"wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg"}
+MAX_JOBS = 200  # finished speak jobs remembered for polling
 
 
 def create_app(settings: Settings | None = None, preload: bool = True) -> FastAPI:
@@ -43,6 +47,9 @@ def create_app(settings: Settings | None = None, preload: bool = True) -> FastAP
 
     app = FastAPI(title="Sonorus", version=__version__, lifespan=lifespan)
     app.state.engine = engine
+    # Speak jobs for clients behind proxies that cut long requests (RunPod's closes them after ~100 s).
+    jobs: OrderedDict[str, dict] = OrderedDict()
+    runner = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sonorus-job")
 
     @app.exception_handler(SonorusError)
     async def _user_error(_req, exc: SonorusError):
@@ -87,7 +94,7 @@ def create_app(settings: Settings | None = None, preload: bool = True) -> FastAP
                  "features": omni_features, "ref_seconds": [3, 10]},
                 {"id": "fish", "label": "Fish Speech", "available": engine.fish is not None, "params": FISH_PARAMS,
                  "nonverbal": [{"tag": t, "label": l} for t, l in FISH_TAGS],
-                 "features": {k: False for k in omni_features} | {"normalize": True}, "ref_seconds": [5, 30]},
+                 "features": {k: False for k in omni_features}, "ref_seconds": [10, 30]},
             ],
         }
 
@@ -108,19 +115,50 @@ def create_app(settings: Settings | None = None, preload: bool = True) -> FastAP
         params: str = Form("{}"),
         engine_id: str = Form("omnivoice", alias="engine"),
         ref_audio: UploadFile | None = File(None),
+        wait: bool = Query(True, description="false = return a job id at once and poll /api/jobs/{id}"),
     ):
         try:
             parsed = json.loads(params or "{}")
         except json.JSONDecodeError:
             raise HTTPException(400, "params must be a JSON object")
-        with tempfile.TemporaryDirectory() as tmp:
-            req = SpeakRequest(
-                text=text, voice=voice or None, ref_audio=_save_upload(ref_audio, tmp), ref_text=ref_text,
-                instruct=instruct, language=language or None, speed=speed, duration=duration, seed=seed,
-                normalize_text=normalize_text, format=format, params=parsed, engine=engine_id,
-            )
-            item = engine.speak(req)
-        return {**item, "url": f"/api/history/{item['id']}/audio"}
+        tmp = tempfile.mkdtemp(prefix="sonorus-")
+        req = SpeakRequest(
+            text=text, voice=voice or None, ref_audio=_save_upload(ref_audio, tmp), ref_text=ref_text,
+            instruct=instruct, language=language or None, speed=speed, duration=duration, seed=seed,
+            normalize_text=normalize_text, format=format, params=parsed, engine=engine_id,
+        )
+
+        def run() -> dict:
+            try:
+                item = engine.speak(req)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            return {**item, "url": f"/api/history/{item['id']}/audio"}
+
+        if wait:
+            return run()
+        job_id = uuid.uuid4().hex
+        jobs[job_id] = {"state": "running"}
+        while len(jobs) > MAX_JOBS:
+            jobs.popitem(last=False)
+
+        def finish(future):
+            try:
+                jobs[job_id] = {"state": "done", "item": future.result()}
+            except SonorusError as exc:
+                jobs[job_id] = {"state": "error", "detail": str(exc)}
+            except Exception as exc:
+                logging.getLogger("sonorus").exception("Speak job failed")
+                jobs[job_id] = {"state": "error", "detail": f"The spell backfired: {exc}"}
+
+        runner.submit(run).add_done_callback(finish)
+        return JSONResponse(status_code=202, content={"job": job_id, "state": "running"})
+
+    @app.get("/api/jobs/{job_id}")
+    def job(job_id: str):
+        if job_id not in jobs:
+            raise HTTPException(404, "No such spell in progress (the server may have restarted).")
+        return {"job": job_id, **jobs[job_id]}
 
     # -- vault --------------------------------------------------------------
 

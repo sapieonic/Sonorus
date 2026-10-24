@@ -78,8 +78,8 @@ Sonorus code rebuilds just the last few layers.
 only code and libraries. If you keep it private, set `registry_username` and `registry_password` in the pod stack
 (step 5). For Docker Hub use an access token as the password; for GHCR use a token with `read:packages`.
 
-Use a new tag for every build (`0.2.0`, `0.2.1`, …) rather than reusing one. A pod pulls the image only when it is
-created, so a changed tag is what tells Terraform to roll out a new pod.
+Use a new tag for every build (`0.2.0`, `0.2.1`, …) rather than reusing one. Terraform only sees a change when the
+`image` value changes, so pushing over an existing tag would never reach the pod.
 
 ## 3. Pick a data center
 
@@ -119,13 +119,14 @@ terraform output
 ```
 
 The pod stack reads the volume id and data center from the volume stack's state, so you don't copy them across.
-It also asks for a host with CUDA 12.9 or newer (`min_cuda_version`), because the image is built on CUDA 12.9.
+It also asks for a host whose driver supports CUDA 12.6 or newer (`min_cuda_version`), because both engines use
+CUDA 12.6 builds of PyTorch.
 The outputs give you:
 
 - `url`: the public web UI, `https://<pod-id>-7860.proxy.runpod.net`
 - `pod_id`, `gpu`, and `cost_per_hour_usd`
 - `ssh_command`: only once the pod is running and RunPod has assigned the SSH port. If it's empty, wait a minute,
-  then `terraform refresh && terraform output ssh_command`
+  then run `terraform apply -refresh-only` and `terraform output ssh_command`
 
 Variables you can set in `deploy/runpod/pod/terraform.tfvars`:
 
@@ -159,10 +160,17 @@ Open the `url` output in a browser.
 
 - The switch at the top right (**OmniVoice | Fish Speech**) picks the engine. The status pill next to it shows
   the selected engine's state.
-- With Fish Speech, voice design, language, speed and exact length are hidden because S2-Pro doesn't support them.
-  Steer delivery with inline tags instead: `[whisper]`, `[excited]`, `[pause]`, `[laughing]`, `[angry]`,
-  `[emphasis]` (buttons above the text box), or any short natural-language instruction in brackets.
+- With Fish Speech, voice design, language, speed, exact length and "Spell out numbers" are off because S2-Pro
+  doesn't support them. Steer delivery with inline tags instead: `[whisper]`, `[excited]`, `[pause]`, `[laughing]`,
+  `[angry]`, `[emphasis]` (buttons above the text box), or any short natural-language instruction in brackets.
+- Long text works with both engines. For Fish Speech, Sonorus splits it at sentence ends into pieces of about 300
+  characters ("Piece length" in the Restricted Section) and joins the audio. A tag applies to the piece it's in.
 - Saved voices work with both engines. Fish Speech clones best from a 10–30 second clip; OmniVoice prefers 3–10.
+  If you don't type the transcript, Whisper writes one. For Fish Speech it transcribes the whole clip the first time
+  you use the voice, so that first spell takes a little longer.
+- RunPod's proxy closes any request that runs past about 100 seconds. The UI and CLI don't hit this: they start
+  generation as a job and poll it. If you call the API yourself, use `POST /api/speak?wait=false` and poll
+  `GET /api/jobs/{id}`.
 - The Pensieve marks Fish Speech results with a **FISH** badge, and "reuse" switches back to that engine.
 
 The CLI on your Mac can drive the pod too:
@@ -214,10 +222,11 @@ The fish-speech server listens only on `127.0.0.1` inside the pod and isn't expo
 
 | Symptom | What to do |
 |---|---|
-| `terraform apply` on the pod fails with no GPU / capacity available | The data center has no free card of that type with CUDA 12.9+ right now. Try another 48 GB `gpu_type_id`, retry later, or move: destroy the volume, recreate it in another data center (you lose its contents), then apply the pod |
+| `terraform apply` on the pod fails with no GPU / capacity available | The data center has no free card of that type with CUDA 12.6+ right now. Try another 48 GB `gpu_type_id`, retry later, or move: destroy the volume, recreate it in another data center (you lose its contents), then apply the pod |
 | Pod keeps restarting, logs show an image pull error | The image is private and the registry credentials are missing or wrong, or the tag doesn't exist. Check `image`, `registry_username`, `registry_password` |
-| Logs show a CUDA or driver error | Shouldn't happen with `min_cuda_version = "12.9"`, but if it does, recreate the pod (`terraform apply -replace=runpod_pod.sonorus`) to land on another host |
-| Fish Speech stays on "waiting…" | Check the logs for the S2-Pro download or a fish-speech crash. `start.sh` restarts fish-speech every 10 s if it exits. A failed download resumes on the next start |
+| Logs show a CUDA or driver error | Shouldn't happen with `min_cuda_version = "12.6"`, but if it does, recreate the pod (`terraform apply -replace=runpod_pod.sonorus`) to land on another host |
+| Fish Speech stays on "waiting…" | Check the logs. `start.sh` retries a failed S2-Pro download every 30 s (a full volume is a common cause: grow `size_gb` and apply the volume stack) and restarts fish-speech 10 s after it exits. The CLI gives up waiting after 20 minutes (`SONORUS_WAIT` in seconds changes that) |
 | The UI loads but says "No wand found" | Sonorus itself isn't answering yet (still loading) or crashed; check the logs |
 | Out-of-memory errors | Use a bigger card, or set `fish_enabled = false` to free the GPU for OmniVoice |
-| `ssh_command` output is empty | RunPod hadn't assigned the port yet: `terraform refresh && terraform output ssh_command`, or use Connect in the console |
+| `ssh_command` output is empty | RunPod hadn't assigned the port yet: `terraform apply -refresh-only`, then `terraform output ssh_command`, or use Connect in the console |
+| `sonorus` says it can't reach the server | With `SONORUS_URL` set, the CLI never falls back to loading the model on your Mac; check the URL and that the pod is running |

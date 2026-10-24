@@ -344,7 +344,7 @@ class Engine:
                 transformers.utils.logging.set_verbosity_error()
                 device, dtype, dtype_name, asr_device, codec_device = self._pick_device_dtype()
                 self.device, self.dtype = device, dtype_name
-                if device == "mps":
+                if device.startswith("mps"):
                     # transformers copies weights to the device from worker threads; on MPS that hangs forever.
                     os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
                 log.info("Loading %s on %s (%s), codec on %s, ASR on %s",
@@ -450,20 +450,21 @@ class Engine:
         return meta
 
     def _copy_reference(self, src: str, dst: Path) -> None:
-        """Keep a 24 kHz mono WAV of the reference so the UI can play it back."""
+        """Keep a mono WAV of the reference, at its own sample rate: the UI plays it and Fish Speech clones from it."""
         try:
+            import librosa
             import soundfile as sf
-            _import_omnivoice()
-            from omnivoice.utils.audio import load_audio
 
-            sf.write(str(dst), load_audio(src, SAMPLE_RATE)[0], SAMPLE_RATE)
+            audio, sr = librosa.load(src, sr=None, mono=True)
+            sf.write(str(dst), audio, sr)
         except Exception:
             log.warning("Could not store a playable copy of %s", src)
 
     # -- generation ---------------------------------------------------------
 
-    def _transcribe(self, ref_audio: str) -> str:
-        """Transcribe a reference clip with OmniVoice's Whisper (Fish Speech needs a transcript to clone)."""
+    def _transcribe(self, ref_audio: str | Path) -> str:
+        """Transcribe a whole reference clip with OmniVoice's Whisper (Fish Speech needs a transcript to clone)."""
+        import torch
         _import_omnivoice()
         from omnivoice.utils.audio import load_audio
 
@@ -473,9 +474,30 @@ class Engine:
             try:
                 if model._asr_pipe is None:
                     model.load_asr_model()
-                return model.transcribe((load_audio(ref_audio, SAMPLE_RATE), SAMPLE_RATE))
+                audio = {"array": load_audio(str(ref_audio), 16000)[0], "sampling_rate": 16000}
+                with torch.inference_mode():
+                    # Timestamps switch Whisper to long-form mode, so clips over 30 s work too.
+                    text = model._asr_pipe(audio, return_timestamps=True)["text"].strip()
+            except Exception as exc:
+                raise SonorusError(f"Couldn't transcribe the reference clip ({exc}). Type what it says instead.") from exc
             finally:
                 self.busy = False
+        if not text:
+            raise SonorusError("Whisper heard no speech in the reference clip. Type what it says instead.")
+        return text
+
+    def _fish_transcript(self, voice: dict) -> str:
+        """Transcript matching the voice's whole stored clip.
+
+        A typed transcript already covers the whole clip. An auto-transcribed one may not: OmniVoice trims clips
+        over 20 s before transcribing. So the first time Fish uses such a voice, transcribe the stored clip and keep it.
+        """
+        if not voice.get("auto_transcribed"):
+            return voice.get("ref_text") or ""
+        if not voice.get("full_ref_text"):
+            voice = {**voice, "full_ref_text": self._transcribe(self.vault.reference_path(voice["id"]))}
+            self.vault.save(voice)
+        return voice["full_ref_text"]
 
     def speak(self, req: SpeakRequest) -> dict:
         text = req.text.strip()
@@ -579,10 +601,10 @@ class Engine:
 
     def _generate_fish(self, req: SpeakRequest, text: str, voice_meta: dict | None, seed: int):
         if not self.fish:
-            raise SonorusError("Fish Speech is not set up on this server (set SONORUS_FISH_URL).")
+            raise SonorusError("Fish Speech is not set up (set SONORUS_FISH_URL to a fish-speech API server).")
         unsupported = [name for name, value in (
             ("voice design / style hints", (req.instruct or "").strip()), ("language", req.language),
-            ("speed", req.speed), ("exact duration", req.duration)) if value]
+            ("speed", req.speed), ("exact duration", req.duration), ("spelling out numbers", req.normalize_text)) if value]
         if unsupported:
             raise SonorusError(f"Fish Speech doesn't support {', '.join(unsupported)}. "
                                "Steer it with inline tags like [whisper] in the text, or switch to OmniVoice.")
@@ -596,7 +618,7 @@ class Engine:
             clip = self.vault.reference_path(voice_meta["id"])
             if not clip.exists():
                 raise SonorusError(f"'{voice_meta['name']}' has no stored reference clip, so Fish Speech can't use it.")
-            references.append((clip.read_bytes(), voice_meta.get("ref_text") or ""))
+            references.append((clip.read_bytes(), self._fish_transcript(voice_meta)))
         elif req.ref_audio:
             ref_text = (req.ref_text or "").strip() or self._transcribe(req.ref_audio)
             references.append((Path(req.ref_audio).read_bytes(), ref_text))
@@ -605,7 +627,7 @@ class Engine:
             self.busy = True
             try:
                 started = time.time()
-                audio, sr = self.fish.tts(text, references, seed, req.normalize_text, params)
+                audio, sr = self.fish.tts(text, references, seed, params)
                 elapsed = time.time() - started
             except FishError as exc:
                 raise SonorusError(str(exc)) from exc
@@ -618,7 +640,7 @@ class Engine:
             "language": None,
             "speed": None,
             "duration_target": None,
-            "normalize_text": req.normalize_text,
+            "normalize_text": False,
             "params": {k: v for k, v in params.items() if v != FISH_PARAM_DEFAULTS[k]},
             "device": f"fish-speech {self.fish.model}",
         }
